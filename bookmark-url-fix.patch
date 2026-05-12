@@ -1,0 +1,35 @@
+--- KTL.js.orig
++++ KTL.js
+@@ -17459,7 +17459,8 @@
+             const sceneKey = Knack.router.current_scene_key;
+             const userPrefs = ktl.userPrefs.getUserPrefs();
+             const bookmarks = userPrefs.bookmarks || {};
+-            const isBookmarked = !!bookmarks[sceneKey];
++            const currentUrl = window.location.href;
++            const isBookmarked = Object.values(bookmarks).some(b => b.url === currentUrl);
+ 
+             const thisSceneBookmark = bookmarksArr.find(b => b.scene === sceneKey);
+             const allSceneBookmark = bookmarksArr.find(b => b.scene === 'all');
+@@ -17519,7 +17520,11 @@
+ 
+                 ktl.core.timedPopup('Bookmark added', 'success', 1500);
+ 
+-                bookmarks[sceneKey] = {
++                // Use URL as key to allow multiple bookmarks per scene
++                const bookmarkKey = pageUrl;
++                bookmarks[bookmarkKey] = {
++                    url: pageUrl,
++                    name: sceneName,
++                    sceneKey: sceneKey
++                };
++            } else {
++                icon.removeClass('fa-bookmark').addClass('fa-bookmark-o');
++                icon.attr('title', 'Add bookmark');
++                ktl.core.timedPopup('Bookmark removed', 'warning', 1500);
++                
++                // Find and delete bookmark by URL
++                const bookmarkKey = Object.keys(bookmarks).find(key => bookmarks[key].url === pageUrl);
++                if (bookmarkKey) {
++                    delete bookmarks[bookmarkKey];
++                }
++            }
