@@ -7,7 +7,7 @@
 	* 2019-2023
     */
 
-/* KTL CSS version: 0.13.0*/
+/* KTL CSS version: 0.14.2*/
 
 /************ KTL Spacing Constants **************/
 :root {
@@ -224,7 +224,7 @@ th .fa-caret-left {
 .ktlNotValid,
 [class^="ktlNotValid_"]:not(.kn-radio, .kn-checkbox),
 [class*=" ktlNotValid_"]:not(.kn-radio, .kn-checkbox) {
-	background-color: #fdb0b0 !important; /* Same pinkish color as Knack error */
+	background-color: #fdb0b026 !important; /* Same pinkish color as Knack error, but very subtle */
 }
 
 .ktlNotAllowed {
@@ -930,6 +930,16 @@ td.bulkEditSelectedCol.bulkEditSelectedRow {
 
 .ktlConsoleDiv::-webkit-scrollbar-track {
 	background-color: var(--ktlTheme_scrollbarTrack, #ffffff);
+}
+
+.ktlSearchStatusBar {
+	font-family: monospace;
+	font-size: 12px;
+	padding: 12px 0 0;
+	color: var(--ktlTheme_inputFieldText, #555);
+	min-height: 16px;
+	width: 100%;
+	text-align: center;
 }
 
 /* Hotkey Settings Popup */
@@ -1674,6 +1684,35 @@ th.ktlStickyHeader {
 }
 td.ktlStickyCell {
     box-shadow: 1px 0 0 0 var(--ktlTheme_stickyCellBg, #f3f6f9);
+}
+
+/************ Collapsible Groups (_cg) **************/
+.ktlCgToggle {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	margin-right: 6px;
+	border: 1px solid var(--ktlTheme_tableGridColor, #999);
+	background: var(--ktlTheme_tableCellBg, #fff);
+	color: var(--ktlTheme_tableCellText, #333);
+	font-size: 18px;
+	font-weight: bold;
+	cursor: pointer;
+	user-select: none;
+	vertical-align: middle;
+	flex-shrink: 0;
+	padding-bottom: 2px;
+}
+
+.ktlCgToggle:hover {
+	background: var(--ktlTheme_tableHeaderBg, #e0e0e0);
+	border-color: var(--ktlTheme_tableCellText, #666);
+}
+
+tr.ktlCgCollapsed td {
+	border-bottom: 1px solid var(--ktlTheme_tableGridColor, #999);
 }
 
 /**** KTL_RELATED - END ****/

@@ -4,8 +4,10 @@
  *
  * @author  Normand Defayette <nd@ctrnd.com>
  * @license MIT
- * 2019-2023
+ * 2019-2026
  * */
+
+const KTL_VERSION = '0.42.18';
 
 const IFRAME_WND_ID = 'iFrameWnd';
 window.IFRAME_WND_ID = IFRAME_WND_ID;
@@ -22,7 +24,6 @@ function Ktl($, appInfo) {
     if (window.ktl)
         return window.ktl;
 
-    const KTL_VERSION = '0.41.0';
     const APP_KTL_VERSIONS = window.APP_VERSION + ' - ' + KTL_VERSION;
     window.APP_KTL_VERSIONS = APP_KTL_VERSIONS;
 
@@ -36,9 +37,20 @@ function Ktl($, appInfo) {
 
     var ktl = this;
 
+    // Prevents multi-tab version toggling: only save/log if current code is newer than stored.
+    function isNewerVersion(current, stored) {
+        const parse = (v) => v.split(' - ').flatMap(p => p.split('.').map(Number));
+        const c = parse(current), s = parse(stored);
+        for (let i = 0; i < c.length; i++) {
+            if (c[i] > s[i]) return true;
+            if (c[i] < s[i]) return false;
+        }
+        return false;
+    }
+
     const TEXT_DATA_TYPES = ['address', 'date_time', 'email', 'link', 'name', 'number', 'paragraph_text', 'phone', 'short_text', 'currency', 'timer'];
 
-    //KEC stands for "KTL Event Code".  Next:  KEC_1028
+    //KEC stands for "KTL Event Code".  Next:  KEC_1033
 
     //window.ktlParserStart = window.performance.now();
     //Parser step 1 : Add view keywords.
@@ -247,6 +259,14 @@ function Ktl($, appInfo) {
 
             if (viewKwObj._legend?.some(kw => kw.params?.[0]?.includes('all')))
                 ktlKeywords._legendAll = true;
+
+            if (viewKwObj._cg) {
+                if (viewKwObj._cg.some(kw => kw.params?.[0]?.includes('all'))) {
+                    ktlKeywords._cgAll = {};
+                    if (viewKwObj._cg.some(kw => kw.params?.[0]?.includes('collapsed')))
+                        ktlKeywords._cgAll.collapsed = true;
+                }
+            }
         }
     };
 
@@ -1862,6 +1882,13 @@ function Ktl($, appInfo) {
             sortUList: function (uListElem) {
                 if (!uListElem) return;
 
+                //Get label text without icon glyphs (Knack icon fonts use PUA chars that break sorting).
+                var getLabel = function (li) {
+                    var clone = li.cloneNode(true);
+                    clone.querySelectorAll('i, svg').forEach(function (el) { el.remove(); });
+                    return (clone.innerText || clone.textContent || '').trim().toLowerCase();
+                };
+
                 var switching, allListElements, shouldSwitch;
                 switching = true;
                 while (switching) {
@@ -1869,7 +1896,7 @@ function Ktl($, appInfo) {
                     allListElements = uListElem.getElementsByTagName("LI");
                     for (var i = 0; i < allListElements.length - 1; i++) {
                         shouldSwitch = false;
-                        if (allListElements[i].innerText.toLowerCase() > allListElements[i + 1].innerText.toLowerCase()) {
+                        if (getLabel(allListElements[i]) > getLabel(allListElements[i + 1])) {
                             shouldSwitch = true;
                             break;
                         }
@@ -2482,6 +2509,59 @@ function Ktl($, appInfo) {
                 return { left: centeredLeft, top: centeredTop };
             },
 
+            devToolAutoPosition: function (element) {
+                const sw = window.innerWidth || document.documentElement.clientWidth || document.body.clientWidth;
+                const sh = window.innerHeight || document.documentElement.clientHeight || document.body.clientHeight;
+                const ew = element.offsetWidth;
+                const eh = element.offsetHeight;
+                const GAP = 10;
+
+                let left, top;
+                const id = element.id;
+
+                if (id === 'devBtnsDivId') {
+                    const SEARCH_EST_WIDTH = 160;
+                    left = (sw - ew - GAP - SEARCH_EST_WIDTH) / 2;
+                    top = sh * 0.24;
+                } else if (id === 'devToolSearchDivId') {
+                    const ref = document.getElementById('devBtnsDivId');
+                    if (ref && ref.offsetWidth) {
+                        left = ref.offsetLeft + ref.offsetWidth + GAP;
+                        top = ref.offsetTop;
+                    } else {
+                        left = (sw + GAP) / 2;
+                        top = sh * 0.24;
+                    }
+                } else if (id === 'resultWndId') {
+                    const ref = document.getElementById('devToolSearchDivId');
+                    if (ref && ref.offsetHeight) {
+                        left = ref.offsetLeft;
+                        top = ref.offsetTop + ref.offsetHeight + GAP;
+                    } else {
+                        left = (sw + GAP) / 2;
+                        top = sh * 0.38;
+                    }
+                } else {
+                    const baseCenterLeft = (sw - ew) / 2;
+                    const baseCenterTop = (sh - eh) / 2;
+                    const visibleCount = ktl.core.devToolWindows.filter(w => {
+                        return w.element !== element && w.element.isConnected &&
+                            window.getComputedStyle(w.element).display !== 'none';
+                    }).length;
+                    left = baseCenterLeft + (visibleCount * 40);
+                    top = baseCenterTop + (visibleCount * 40);
+                }
+
+                left = Math.max(0, Math.min(left, sw - Math.max(ew, 80)));
+                top = Math.max(0, Math.min(top, sh - 40));
+
+                element.style.position = 'fixed';
+                element.style.left = Math.round(left) + 'px';
+                element.style.top = Math.round(top) + 'px';
+
+                return { left: Math.round(left), top: Math.round(top) };
+            },
+
             showKnackStyleMessage: function (viewId, message, style = 'error' /*or success*/) {
                 Knack.$['utility_forms'].renderMessage($('#' + viewId), '<b>' + message + '</b>', style);
             },
@@ -2615,6 +2695,9 @@ function Ktl($, appInfo) {
 
             ktlDevToolsAdjustPositionAndSave: function (div, devToolStorageName, position = {}) {
                 if (!devToolStorageName)
+                    return;
+
+                if (!div.isConnected || div.style.display === 'none')
                     return;
 
                 const MIN_VISIBLE = 80; // ~2cm at 96 DPI - minimum grab area for header
@@ -3037,6 +3120,7 @@ function Ktl($, appInfo) {
                             } else {
                                 console.log(`\t${search}=${kwInstanceStr}\n`);
                                 result += `   ${search}=${kwInstanceStr}<br>`;
+                                foundItemsCount++;
                             }
                             console.log('\n');
                             result += `<br>`;
@@ -3061,18 +3145,21 @@ function Ktl($, appInfo) {
                     }
                 }
 
+                if (isKeyword && foundItemsCount === 0)
+                    return NO_RESULTS;
+
                 if (result)
                     result += `<br><hr><br>`;
 
                 if (isKeyword) {
-                    result += `<strong>Summary: ${foundItemsCount} items found</strong><br><br>`;
+                    result += `<strong>Summary: ${foundItemsCount} item${foundItemsCount === 1 ? '' : 's'} found</strong><br><br>`;
                 }
 
                 const en = window.performance.now();
                 console.log(`\nFinding all keywords took ${Math.trunc(en - st)} ms`);
 
                 if (isKeyword) {
-                    console.log(`\nSummary: ${foundItemsCount} items found`);
+                    console.log(`\nSummary: ${foundItemsCount} item${foundItemsCount === 1 ? '' : 's'} found`);
                 }
 
                 return result || NO_RESULTS;
@@ -3466,6 +3553,101 @@ function Ktl($, appInfo) {
                     });
                 }
 
+                // Search parsed keywords (options like ktlCond, ktlRefVal, etc.)
+                if (window.ktlKeywords) {
+                    for (const kwKey in ktlKeywords) {
+                        if (results.length >= opts.maxResults) break;
+                        const kwInfo = ktlKeywords[kwKey];
+                        const str = JSON.stringify(kwInfo);
+
+                        if (mode === 'all') {
+                            if (!matchesQueryAll(str)) continue;
+                        } else {
+                            if (!matchesQuerySingle(str)) continue;
+                        }
+
+                        let contextObj = { sceneId: null, viewId: null, viewTitle: '', url: '', appUrl: null };
+                        let isTask = false;
+
+                        if (kwKey.startsWith('view_')) {
+                            for (const scene of Knack.scenes.models) {
+                                const view = scene.views.models.find(v => v?.attributes?.key === kwKey);
+                                if (view) {
+                                    const attr = view.attributes;
+                                    contextObj = {
+                                        sceneId: scene.attributes.key,
+                                        viewId: kwKey,
+                                        viewTitle: attr.title || '',
+                                        url: `/${attr.type || ''}`,
+                                        appUrl: `${Knack.url_base}#${scene.attributes.slug}`
+                                    };
+                                    break;
+                                }
+                            }
+                        } else if (kwKey.startsWith('scene_')) {
+                            isTask = true;
+                            const scene = Knack.scenes.getByKey(kwKey);
+                            if (scene) {
+                                contextObj = {
+                                    viewTitle: scene.attributes.name || '',
+                                    url: `/pages/${kwKey}`,
+                                    appUrl: `${Knack.url_base}#${scene.attributes.slug}`
+                                };
+                            }
+                        } else if (kwKey.startsWith('field_')) {
+                            isTask = true;
+                            const field = Knack.objects?.getField(kwKey);
+                            if (field) {
+                                const objectId = field.attributes.object_key;
+                                contextObj = {
+                                    viewTitle: field.attributes.name || '',
+                                    url: `/schema/list/objects/${objectId}/fields/${kwKey}/settings`
+                                };
+                            }
+                        }
+
+                        // Build full keyword text for each matching keyword
+                        for (const kwName in kwInfo) {
+                            if (!kwName.startsWith('_') || results.length >= opts.maxResults) continue;
+                            const instances = kwInfo[kwName];
+                            if (!Array.isArray(instances)) continue;
+
+                            for (const inst of instances) {
+                                if (!inst) continue;
+                                const fullText = `${kwName}=${inst.paramStr || '[]'}`;
+                                const fullTextLower = fullText.toLowerCase();
+                                const matches = searchTerms.some(term => fullTextLower.includes(term));
+                                if (!matches) continue;
+                                if (excluded.some(term => fullTextLower.includes(term))) continue;
+
+                                const builderUrl = isTask
+                                    ? `${baseURL}${contextObj.url}`
+                                    : `${baseURL}/pages/${contextObj.sceneId}/views/${contextObj.viewId}${contextObj.url}`;
+
+                                results.push({
+                                    type: isTask ? 'task' : 'view',
+                                    sceneId: contextObj.sceneId || null,
+                                    viewId: contextObj.viewId || null,
+                                    viewTitle: contextObj.viewTitle || '',
+                                    matchedText: fullText,
+                                    fullText: fullText,
+                                    path: `keywords[${kwKey}]`,
+                                    builderUrl: builderUrl,
+                                    appUrl: contextObj.appUrl || null
+                                });
+
+                                if (opts.outputFormat === 'console' || opts.outputFormat === 'both') {
+                                    console.log(`Found: "${fullText}" in keywords[${kwKey}]`);
+                                    console.log(`%cBuilder: ${builderUrl}`, 'color: blue; cursor: pointer;');
+                                    if (contextObj.appUrl) {
+                                        console.log(`%cApp: ${contextObj.appUrl}`, 'color: green; cursor: pointer;');
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 const en = window.performance.now();
                 const searchTime = Math.trunc(en - st);
 
@@ -3480,7 +3662,7 @@ function Ktl($, appInfo) {
                     const modeDesc = mode === 'all' ? 'AND' : 'OR';
                     const excludeDesc = excluded.length > 0 ? ` (excluding: ${excluded.join(', ')})` : '';
                     html = `<strong>Search: "${query}" [${modeDesc}]${excludeDesc}</strong><br>`;
-                    html += `<strong>${results.length} result(s) found in ${searchTime} ms</strong><br><br>`;
+                    html += `<strong>${results.length} result${results.length === 1 ? '' : 's'} found in ${searchTime} ms</strong><br><br>`;
 
                     results.forEach((result, idx) => {
                         html += `<strong>${idx + 1}. ${result.viewId || 'Task'}${result.viewTitle ? ': ' + result.viewTitle : ''}</strong><br>`;
@@ -4283,9 +4465,7 @@ function Ktl($, appInfo) {
                 ktl.core.enableSortableDrag(popup);
                 ktl.core.registerDevToolWindow(popup, () => popup.style.display = 'none');
 
-                const position = ktl.core.centerElementOnScreen(popup);
-                popup.style.left = position.left + 'px';
-                popup.style.top = position.top + 'px';
+                ktl.core.devToolAutoPosition(popup);
             },
 
         }
@@ -4313,6 +4493,9 @@ function Ktl($, appInfo) {
          * @property {number} [writeMinConcurrency=1] - Min concurrency after rate limiting.
          * @property {number} [writeMaxConcurrency=8] - Upper bound for adaptive concurrency. Max 8 allows scaling to 80% of Knack's 10 API/sec limit.
          * @property {number} [writeRampDelayMs=2000] - Delay before ramping concurrency.
+         * @property {number|null} [maxAssetSizeBytes=null] - Optional hard max upload size in bytes. `null` disables max-size enforcement.
+         * @property {number} [warnAssetSizeBytes=52428800] - Warn threshold in bytes (default 50MB).
+         * @property {boolean} [enforceAssetSize=false] - When true, reject uploads above `maxAssetSizeBytes` before network request.
          */
 
         class KtlKnackApi {
@@ -4345,11 +4528,19 @@ function Ktl($, appInfo) {
                     writeRatePerSecond: Number.isFinite(options.writeRatePerSecond) ? options.writeRatePerSecond : 9,
                     writeMinConcurrency: Number.isFinite(options.writeMinConcurrency) ? options.writeMinConcurrency : 1,
                     writeMaxConcurrency: Number.isFinite(options.writeMaxConcurrency) ? options.writeMaxConcurrency : 8,
-                    writeRampDelayMs: Number.isFinite(options.writeRampDelayMs) ? options.writeRampDelayMs : 2000
+                    writeRampDelayMs: Number.isFinite(options.writeRampDelayMs) ? options.writeRampDelayMs : 2000,
+                    maxAssetSizeBytes: Number.isFinite(options.maxAssetSizeBytes) && options.maxAssetSizeBytes > 0
+                        ? options.maxAssetSizeBytes
+                        : null,
+                    warnAssetSizeBytes: Number.isFinite(options.warnAssetSizeBytes) && options.warnAssetSizeBytes >= 0
+                        ? options.warnAssetSizeBytes
+                        : (50 * 1024 * 1024),
+                    enforceAssetSize: options.enforceAssetSize === true
                 };
 
                 this._initLogSettings();
                 this._initWriteQueue();
+                this._inflightGets = new Map();
             }
 
             /**
@@ -4383,22 +4574,22 @@ function Ktl($, appInfo) {
             }
 
             /**
-             * Get all records from a view across pages.
+             * Get all records from a view across pages, fetching remaining pages in parallel batches.
              * @param {string} viewId
              * @param {Object} [options]
+             * @param {number} [options.pageConcurrency=5] - Max pages to fetch concurrently after the first.
              * @returns {Promise<Array<Object>>}
              */
             async getAllRecords(viewId, options = {}) {
                 const opts = options || {};
                 const rows = Number.isFinite(opts.rows) ? opts.rows : 1000;
-                const firstPage = await this.getRecords(viewId, {
-                    filters: opts.filters,
-                    sorters: opts.sorters,
-                    page: 1,
-                    rows,
-                    rawResponse: true,
-                    timeout: opts.timeout
-                });
+                const pageConcurrency = Number.isFinite(opts.pageConcurrency) && opts.pageConcurrency > 0
+                    ? Math.floor(opts.pageConcurrency)
+                    : 5;
+                const pageOpts = { filters: opts.filters, sorters: opts.sorters, rows, rawResponse: true, timeout: opts.timeout };
+                const failOnPageError = Boolean(opts.failOnPageError);
+
+                const firstPage = await this.getRecords(viewId, { ...pageOpts, page: 1 });
 
                 const totalPages = Number(firstPage?.total_pages || 0);
                 const totalRecords = Number(firstPage?.total_records || 0);
@@ -4406,27 +4597,44 @@ function Ktl($, appInfo) {
 
                 if (totalRecords === 0 || totalPages <= 1) return allRecords;
 
-                for (let page = 2; page <= totalPages; page += 1) {
-                    const nextPage = await this.getRecords(viewId, {
-                        filters: opts.filters,
-                        sorters: opts.sorters,
-                        page,
-                        rows,
-                        rawResponse: true,
-                        timeout: opts.timeout
-                    });
+                // Fetch remaining pages in parallel batches to reduce wall-clock time.
+                for (let batchStart = 2; batchStart <= totalPages; batchStart += pageConcurrency) {
+                    const batchEnd = Math.min(totalPages, batchStart + pageConcurrency - 1);
+                    const pageNumbers = [];
+                    for (let p = batchStart; p <= batchEnd; p++) pageNumbers.push(p);
 
-                    if (Array.isArray(nextPage?.records)) {
-                        allRecords.push(...nextPage.records);
+                    const batchResults = await Promise.allSettled(
+                        pageNumbers.map(page => this.getRecords(viewId, { ...pageOpts, page }))
+                    );
+
+                    for (let i = 0; i < batchResults.length; i++) {
+                        const result = batchResults[i];
+                        const page = pageNumbers[i];
+
+                        if (result.status === 'fulfilled') {
+                            const nextPage = result.value;
+                            if (Array.isArray(nextPage?.records)) allRecords.push(...nextPage.records);
+                            continue;
+                        }
+
+                        this._log('Page fetch failed', {
+                            viewId,
+                            page,
+                            error: result.reason?.message || result.reason
+                        }, 'warn');
+
+                        if (failOnPageError) {
+                            throw result.reason;
+                        }
                     }
 
                     if (typeof opts.onProgress === 'function') {
                         opts.onProgress({
-                            page,
+                            page: batchEnd,
                             totalPages,
                             recordsLoaded: allRecords.length,
                             totalRecords,
-                            percentage: totalPages > 0 ? Math.round((page / totalPages) * 100) : 100
+                            percentage: Math.round((batchEnd / totalPages) * 100)
                         });
                     }
                 }
@@ -4451,38 +4659,38 @@ function Ktl($, appInfo) {
              * Fetch child records connected to a parent record.
              * @param {string} viewId
              * @param {string} recordId
-             * @param {string} connectionFieldKey
+             * @param {string} connectionSlug
              * @param {Object} [options]
              * @returns {Promise<Array<Object>|Object>}
              */
-            async getRecordChildren(viewId, recordId, connectionFieldKey, options = {}) {
+            async getChildRecords(viewId, recordId, connectionSlug, options = {}) {
                 const opts = options || {};
                 const params = this._buildQueryParams(opts);
-                params[`${connectionFieldKey}_id`] = recordId;
+                params[`${connectionSlug}_id`] = recordId;
                 const url = this._formatApiUrl(viewId) + this._formatParams(params);
                 const responseData = await this._request(url, { method: 'GET' }, opts.timeout);
                 return opts.rawResponse ? responseData : responseData?.records;
             }
 
             /**
-             * Fetch all connected child records.
+             * Fetch all connected child records, fetching remaining pages in parallel batches.
              * @param {string} viewId
              * @param {string} recordId
-             * @param {string} connectionFieldKey
+             * @param {string} connectionSlug
              * @param {Object} [options]
+             * @param {number} [options.pageConcurrency=5] - Max pages to fetch concurrently after the first.
              * @returns {Promise<Array<Object>>}
              */
-            async getAllRecordChildren(viewId, recordId, connectionFieldKey, options = {}) {
+            async getAllChildRecords(viewId, recordId, connectionSlug, options = {}) {
                 const opts = options || {};
                 const rows = Number.isFinite(opts.rows) ? opts.rows : 1000;
-                const firstPage = await this.getRecordChildren(viewId, recordId, connectionFieldKey, {
-                    filters: opts.filters,
-                    sorters: opts.sorters,
-                    page: 1,
-                    rows,
-                    rawResponse: true,
-                    timeout: opts.timeout
-                });
+                const pageConcurrency = Number.isFinite(opts.pageConcurrency) && opts.pageConcurrency > 0
+                    ? Math.floor(opts.pageConcurrency)
+                    : 5;
+                const pageOpts = { filters: opts.filters, sorters: opts.sorters, rows, rawResponse: true, timeout: opts.timeout };
+                const failOnPageError = Boolean(opts.failOnPageError);
+
+                const firstPage = await this.getChildRecords(viewId, recordId, connectionSlug, { ...pageOpts, page: 1 });
 
                 const totalPages = Number(firstPage?.total_pages || 0);
                 const totalRecords = Number(firstPage?.total_records || 0);
@@ -4490,27 +4698,46 @@ function Ktl($, appInfo) {
 
                 if (totalRecords === 0 || totalPages <= 1) return allRecords;
 
-                for (let page = 2; page <= totalPages; page += 1) {
-                    const nextPage = await this.getRecordChildren(viewId, recordId, connectionFieldKey, {
-                        filters: opts.filters,
-                        sorters: opts.sorters,
-                        page,
-                        rows,
-                        rawResponse: true,
-                        timeout: opts.timeout
-                    });
+                // Fetch remaining pages in parallel batches to reduce wall-clock time.
+                for (let batchStart = 2; batchStart <= totalPages; batchStart += pageConcurrency) {
+                    const batchEnd = Math.min(totalPages, batchStart + pageConcurrency - 1);
+                    const pageNumbers = [];
+                    for (let p = batchStart; p <= batchEnd; p++) pageNumbers.push(p);
 
-                    if (Array.isArray(nextPage?.records)) {
-                        allRecords.push(...nextPage.records);
+                    const batchResults = await Promise.allSettled(
+                        pageNumbers.map(page => this.getChildRecords(viewId, recordId, connectionSlug, { ...pageOpts, page }))
+                    );
+
+                    for (let i = 0; i < batchResults.length; i++) {
+                        const result = batchResults[i];
+                        const page = pageNumbers[i];
+
+                        if (result.status === 'fulfilled') {
+                            const nextPage = result.value;
+                            if (Array.isArray(nextPage?.records)) allRecords.push(...nextPage.records);
+                            continue;
+                        }
+
+                        this._log('Child page fetch failed', {
+                            viewId,
+                            recordId,
+                            connectionSlug,
+                            page,
+                            error: result.reason?.message || result.reason
+                        }, 'warn');
+
+                        if (failOnPageError) {
+                            throw result.reason;
+                        }
                     }
 
                     if (typeof opts.onProgress === 'function') {
                         opts.onProgress({
-                            page,
+                            page: batchEnd,
                             totalPages,
                             recordsLoaded: allRecords.length,
                             totalRecords,
-                            percentage: totalPages > 0 ? Math.round((page / totalPages) * 100) : 100
+                            percentage: Math.round((batchEnd / totalPages) * 100)
                         });
                     }
                 }
@@ -4519,32 +4746,68 @@ function Ktl($, appInfo) {
             }
 
             /**
+             * Find all records where a field equals a value. Convenience wrapper around getAllRecords.
+             * @param {string} viewId
+             * @param {string} fieldId - The field key to filter on (e.g. 'field_1').
+             * @param {*} value - The value to match.
+             * @param {Object} [options] - Same options as getAllRecords.
+             * @returns {Promise<Array<Object>>}
+             */
+            async findRecords(viewId, fieldId, value, options = {}) {
+                const opts = options || {};
+                const baseRule = { field: fieldId, operator: 'is', value };
+                let mergedFilters = { match: 'and', rules: [baseRule] };
+
+                if (opts.filters) {
+                    if (opts.filters.match && Array.isArray(opts.filters.rules)) {
+                        if (this._hasNestedFilterGroups(opts.filters)) {
+                            throw new Error('KTL API error: nested filter groups are not supported by Knack. Use flat rules or separate API calls and merge results.');
+                        }
+
+                        if (String(opts.filters.match).toLowerCase() !== 'and') {
+                            throw new Error('KTL API error: findRecords cannot merge grouped filters unless match is "and". Use separate queries and merge results for "or" logic.');
+                        }
+
+                        mergedFilters = { match: 'and', rules: [baseRule, ...opts.filters.rules] };
+                    } else {
+                        mergedFilters = { match: 'and', rules: [baseRule, opts.filters] };
+                    }
+                }
+
+                return this.getAllRecords(viewId, { ...opts, filters: mergedFilters });
+            }
+
+            /**
              * Create a record in a view.
              * @param {string} viewId
              * @param {Object} recordData
-             * @param {Array|string} [refreshViews]
              * @param {Object} [options]
+             * @param {Array|string} [options.refreshViews]
+             * @param {boolean} [options.autoUploadAssets=false] - When true, File/Blob values are uploaded first and replaced by asset ids.
+             * @param {string[]} [options.assetFieldIds] - Optional allow-list of field keys eligible for auto asset upload.
+             * @param {Object<string, 'file'|'image'>} [options.assetTypesByField] - Optional per-field asset type override.
              * @returns {Promise<Object>}
              */
-            async createRecord(viewId, recordData, refreshViews, options = {}) {
+            async createRecord(viewId, recordData, options = {}) {
+                this._assertWriteOptions(options, 'createRecord');
                 const opts = options || {};
                 const url = this._formatApiUrl(viewId);
-                const staggerMs = Math.max(0, Number(opts.staggerMs) || 0);
-                if (staggerMs > 0) {
-                    await new Promise(resolve => setTimeout(resolve, staggerMs));
-                }
+                const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
+
+                const preparedRecordData = await this._prepareRecordData(recordData, opts);
+
                 return await this._enqueueWrite(async () => {
                     const result = await this._request(
                         url,
                         {
                             method: 'POST',
-                            body: this._prepareBody(recordData),
+                            body: this._prepareBody(preparedRecordData),
                             rateLimitHandler: (delayMs) => this._notifyWriteRateLimit(delayMs),
                             onRateLimit429: typeof opts._on429 === 'function' ? opts._on429 : null
                         },
                         opts.timeout
                     );
-                    await this._refreshAfterWrite(refreshViews);
+                    await this._refreshAfterWrite(effectiveRefresh);
                     return result;
                 });
             }
@@ -4553,63 +4816,63 @@ function Ktl($, appInfo) {
              * Create multiple records in a view using write concurrency.
              * @param {string} viewId
              * @param {Object[]} recordsData
-             * @param {Array|string} [refreshViews]
              * @param {Object} [options]
+             * @param {Array|string} [options.refreshViews]
              * @param {Function} [options.onProgress]
              * @param {number} [options.staggerMs=0]
-             * @param {boolean} [options.continueOnError=false]
+             * @param {boolean} [options.continueOnError=true]
+             * @param {boolean} [options.autoUploadAssets=false] - When true, File/Blob values are uploaded first and replaced by asset ids.
+             * @param {string[]} [options.assetFieldIds] - Optional allow-list of field keys eligible for auto asset upload.
+             * @param {Object<string, 'file'|'image'>} [options.assetTypesByField] - Optional per-field asset type override.
              * @returns {Promise<{ total: number, created: number, failed: number, records: Object[] }>}
              */
-            async createRecords(viewId, recordsData, refreshViews, options = {}) {
+            async createRecords(viewId, recordsData, options = {}) {
+                this._assertWriteOptions(options, 'createRecords');
                 const payloads = Array.isArray(recordsData) ? recordsData.filter(Boolean) : [];
                 const total = payloads.length;
                 if (!total) return { total: 0, created: 0, failed: 0, records: [] };
 
-                const opts = options || {};
-                const staggerMs = Math.max(0, Number(opts.staggerMs) || 0);
-                const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
                 let created = 0;
                 let failed = 0;
                 let rateLimit429Count = 0;
                 let firstError = null;
                 const failedIndices = [];
                 const createdRecords = [];
-                const requestOptions = {
-                    ...opts,
-                    _on429: () => {
-                        rateLimit429Count += 1;
-                    }
-                };
-
-                const tasks = payloads.map((recordData, index) => delay(staggerMs * index).then(() => this.createRecord(viewId, recordData, [], requestOptions))
-                    .then((record) => {
-                        created += 1;
-                        createdRecords[index] = record;
-                        if (typeof opts.onProgress === 'function')
-                            opts.onProgress({ created, failed, total, index, record });
-                    })
-                    .catch((error) => {
-                        failed += 1;
-                        failedIndices.push(index);
-                        if (!firstError) firstError = error;
-                        if (typeof opts.onProgress === 'function')
-                            opts.onProgress({ created, failed, total, index, error });
-                        if (!opts.continueOnError) throw error;
-                    }));
+                const effectiveRefresh = this._normalizeRefreshViews(options?.refreshViews);
+                const batchOptions = { ...(options || {}) };
+                delete batchOptions.refreshViews;
+                const { opts, staggerMs, workerCount, requestOptions } = this._buildBatchContext(total, batchOptions, () => {
+                    rateLimit429Count += 1;
+                });
 
                 try {
-                    if (opts.continueOnError) {
-                        await Promise.allSettled(tasks);
-                    } else {
-                        await Promise.all(tasks);
-                    }
+                    const batchResult = await this._runBatchWorkers({
+                        total,
+                        workerCount,
+                        staggerMs,
+                        continueOnError: opts.continueOnError,
+                        execute: async (index) => {
+                            try {
+                                const record = await this.createRecord(viewId, payloads[index], requestOptions);
+                                created += 1;
+                                createdRecords[index] = record;
+                                if (typeof opts.onProgress === 'function')
+                                    opts.onProgress({ created, failed, total, index, record });
+                            } catch (error) {
+                                failed += 1;
+                                failedIndices.push(index);
+                                if (typeof opts.onProgress === 'function')
+                                    opts.onProgress({ created, failed, total, index, error });
+                                if (!opts.continueOnError)
+                                    throw error;
+                            }
+                        }
+                    });
+                    firstError = batchResult.firstError;
 
-                    await this._refreshAfterWrite(refreshViews);
+                    await this._refreshAfterWrite(effectiveRefresh);
 
-                    if (failedIndices.length > 0 && typeof ktl?.log?.addLog === 'function') {
-                        const errorMsg = `KEC_1027 - API create failed for view ${viewId}. Failed records (${failedIndices.length}/${total}) at indices: ${failedIndices.join(', ')}`;
-                        ktl.log.addLog(ktl.const.LS_APP_ERROR, errorMsg);
-                    }
+                    this._logBatchFailures('KEC_1028', 'create', viewId, failedIndices.length, total, `at indices: ${failedIndices.join(', ')}`);
 
                     if (firstError && !opts.continueOnError)
                         throw firstError;
@@ -4617,8 +4880,177 @@ function Ktl($, appInfo) {
                     return { total, created, failed, records: createdRecords.filter(Boolean) };
                 } finally {
                     const processed = created + failed;
-                    console.log(`[KTL API] Concurrent create summary for view ${viewId}: processed ${processed}/${total}, 429s ${rateLimit429Count}`);
+                    this._logBatchSummary('create', viewId, processed, total, rateLimit429Count);
                 }
+            }
+
+            /**
+             * Upload a file or image asset to Knack and return the uploaded asset metadata.
+             * @param {File|Blob} file
+             * @param {Object} [options]
+             * @param {'file'|'image'} [options.assetType] - Optional override. Auto-detected from mime type when omitted.
+             * @param {number} [options.timeout]
+             * @param {number|null} [options.maxAssetSizeBytes] - Optional per-call max upload size in bytes. `null` disables max-size enforcement.
+             * @param {number} [options.warnAssetSizeBytes] - Optional per-call warning threshold in bytes.
+             * @param {boolean} [options.enforceAssetSize] - Optional per-call override for max-size enforcement.
+             * @returns {Promise<Object>} Uploaded asset payload (must include `id`).
+             */
+            async uploadAsset(file, options = {}) {
+                if (!(file instanceof Blob)) {
+                    throw new Error('KTL API error: uploadAsset requires a File/Blob.');
+                }
+
+                const opts = options || {};
+                const appId = Knack?.application_id;
+                if (!appId) {
+                    throw new Error('KTL API error: missing Knack application id.');
+                }
+
+                const inferredType = (file?.type || '').startsWith('image/') ? 'image' : 'file';
+                const assetType = opts.assetType === 'image' || opts.assetType === 'file' ? opts.assetType : inferredType;
+                const base = this._getApiBaseUrl().replace(/\/$/, '');
+                const url = `${base}/applications/${appId}/assets/${assetType}/upload`;
+
+                const hasKnownFileSize = Number.isFinite(file?.size);
+                const fileSizeBytes = hasKnownFileSize ? file.size : null;
+                const warnAssetSizeBytes = Number.isFinite(opts.warnAssetSizeBytes) && opts.warnAssetSizeBytes >= 0
+                    ? opts.warnAssetSizeBytes
+                    : this.options.warnAssetSizeBytes;
+                const maxAssetSizeBytes = (opts.maxAssetSizeBytes === null)
+                    ? null
+                    : (Number.isFinite(opts.maxAssetSizeBytes) && opts.maxAssetSizeBytes > 0
+                        ? opts.maxAssetSizeBytes
+                        : this.options.maxAssetSizeBytes);
+                const enforceAssetSize = opts.enforceAssetSize === true
+                    ? true
+                    : (opts.enforceAssetSize === false ? false : this.options.enforceAssetSize);
+                const uploadFileName = typeof file?.name === 'string' && file.name.length ? file.name : 'upload.bin';
+                const exceedsWarnThreshold = hasKnownFileSize
+                    && Number.isFinite(warnAssetSizeBytes)
+                    && warnAssetSizeBytes >= 0
+                    && fileSizeBytes > warnAssetSizeBytes;
+                const exceedsMaxThreshold = hasKnownFileSize
+                    && Number.isFinite(maxAssetSizeBytes)
+                    && maxAssetSizeBytes > 0
+                    && fileSizeBytes > maxAssetSizeBytes;
+
+                if (!hasKnownFileSize) {
+                    if (enforceAssetSize && Number.isFinite(maxAssetSizeBytes) && maxAssetSizeBytes > 0) {
+                        throw new Error('KTL API error: uploadAsset cannot validate file size because the file size is unavailable and asset size enforcement is enabled.');
+                    }
+
+                    this._log('Asset upload size is unavailable; proceeding without size validation', {
+                        fileName: uploadFileName,
+                        fileType: file?.type || '',
+                        fileSizeRaw: file?.size,
+                        warnAssetSizeBytes,
+                        maxAssetSizeBytes,
+                        enforceAssetSize
+                    }, 'warn');
+                } else if (exceedsMaxThreshold) {
+                    const sizeMessage = `KTL API error: uploadAsset file size ${this._formatByteSize(fileSizeBytes)} exceeds configured max ${this._formatByteSize(maxAssetSizeBytes)}.`;
+                    if (enforceAssetSize) {
+                        throw new Error(sizeMessage);
+                    }
+
+                    this._log('Asset upload exceeds configured max size but enforcement is disabled', {
+                        fileName: uploadFileName,
+                        fileSizeBytes,
+                        maxAssetSizeBytes,
+                        fileSizeLabel: this._formatByteSize(fileSizeBytes),
+                        maxSizeLabel: this._formatByteSize(maxAssetSizeBytes)
+                    }, 'warn');
+                } else if (exceedsWarnThreshold) {
+                    this._log('Asset upload exceeds warning threshold', {
+                        fileName: uploadFileName,
+                        fileSizeBytes,
+                        warnAssetSizeBytes,
+                        fileSizeLabel: this._formatByteSize(fileSizeBytes),
+                        warnSizeLabel: this._formatByteSize(warnAssetSizeBytes)
+                    }, 'warn');
+                }
+
+                const formData = new FormData();
+                formData.append('files', file, uploadFileName);
+
+                const timeoutMs = Number.isFinite(opts.timeout) ? opts.timeout : this.options.timeout;
+
+                return await this._enqueueWrite(async () => {
+                    const result = await this._request(
+                        url,
+                        {
+                            method: 'POST',
+                            headers: this._buildUploadHeaders(),
+                            body: formData,
+                            rateLimitHandler: (delayMs) => this._notifyWriteRateLimit(delayMs),
+                            onRateLimit429: typeof opts._on429 === 'function' ? opts._on429 : null
+                        },
+                        timeoutMs
+                    );
+
+                    const asset = Array.isArray(result) ? result[0] : result;
+                    if (!asset || !asset.id) {
+                        throw new Error('KTL API error: asset upload succeeded but no asset id was returned.');
+                    }
+
+                    return asset;
+                });
+            }
+
+            /**
+             * Replace File/Blob field values with uploaded Knack asset IDs when autoUploadAssets is enabled.
+             * Used by both createRecord and updateRecord so that callers can pass File/Blob values directly.
+             * @param {Object} recordData
+             * @param {Object} options
+             * @returns {Promise<Object>}
+             * @private
+             */
+            async _prepareRecordData(recordData, options = {}) {
+                const data = recordData && typeof recordData === 'object' ? { ...recordData } : recordData;
+                if (!options?.autoUploadAssets || !data || typeof data !== 'object') {
+                    return data;
+                }
+
+                const allowList = Array.isArray(options.assetFieldIds)
+                    ? new Set(options.assetFieldIds)
+                    : null;
+                const typesByField = options.assetTypesByField || {};
+
+                for (const [fieldKey, value] of Object.entries(data)) {
+                    if (!(value instanceof Blob)) continue;
+                    if (allowList && !allowList.has(fieldKey)) continue;
+                    if (!allowList && !this._isAssetField(fieldKey)) continue;
+
+                    const assetType = typesByField[fieldKey];
+                    const asset = await this.uploadAsset(value, {
+                        timeout: options.timeout,
+                        assetType
+                    });
+                    data[fieldKey] = asset.id;
+                }
+
+                return data;
+            }
+
+            /**
+             * Determine if a field key is a Knack file/image field.
+             * @param {string} fieldKey
+             * @returns {boolean}
+             * @private
+             */
+            _isAssetField(fieldKey = '') {
+                if (!fieldKey || typeof fieldKey !== 'string') return false;
+
+                const fromKtl = typeof ktl?.fields?.getFieldType === 'function'
+                    ? ktl.fields.getFieldType(fieldKey)
+                    : null;
+                if (fromKtl === 'file' || fromKtl === 'image') {
+                    return true;
+                }
+
+                const fieldModel = Knack?.objects?.getField?.(fieldKey);
+                const fieldType = fieldModel?.attributes?.type || null;
+                return fieldType === 'file' || fieldType === 'image';
             }
 
             /**
@@ -4626,99 +5058,114 @@ function Ktl($, appInfo) {
              * @param {string} viewId
              * @param {string} recordId
              * @param {Object} recordData
-             * @param {Array|string} [refreshViews]
              * @param {Object} [options]
+             * @param {Array|string} [options.refreshViews]
+             * @param {boolean} [options.autoUploadAssets=false] - When true, File/Blob values are uploaded first and replaced by asset ids.
+             * @param {string[]} [options.assetFieldIds] - Optional allow-list of field keys eligible for auto asset upload.
+             * @param {Object<string, 'file'|'image'>} [options.assetTypesByField] - Optional per-field asset type override.
              * @returns {Promise<Object>}
              */
-            async updateRecord(viewId, recordId, recordData, refreshViews, options = {}) {
+            async updateRecord(viewId, recordId, recordData, options = {}) {
+                this._assertWriteOptions(options, 'updateRecord');
                 const opts = options || {};
                 const url = this._formatApiUrl(viewId, recordId);
+                const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
+                const preparedRecordData = await this._prepareRecordData(recordData, opts);
                 return await this._enqueueWrite(async () => {
                     const result = await this._request(
                         url,
                         {
                             method: 'PUT',
-                            body: this._prepareBody(recordData),
+                            body: this._prepareBody(preparedRecordData),
                             rateLimitHandler: (delayMs) => this._notifyWriteRateLimit(delayMs),
                             onRateLimit429: typeof opts._on429 === 'function' ? opts._on429 : null
                         },
                         opts.timeout
                     );
-                    await this._refreshAfterWrite(refreshViews);
+                    await this._refreshAfterWrite(effectiveRefresh);
                     return result;
                 });
             }
 
             /**
              * Update multiple records in a view using write concurrency.
+             *
              * @param {string} viewId
              * @param {string[]} recordIds
              * @param {Object} recordData
-             * @param {Array|string} [refreshViews]
              * @param {Object} [options]
+             * @param {Array|string} [options.refreshViews]
              * @param {Function} [options.onProgress]
              * @param {number} [options.staggerMs=0]
-             * @param {boolean} [options.continueOnError=false]
+             * @param {boolean} [options.continueOnError=true]
              * @returns {Promise<{ total: number, updated: number, failed: number }>}
              */
-            async updateRecords(viewId, recordIds, recordData, refreshViews, options = {}) {
-                const ids = Array.isArray(recordIds) ? recordIds.filter(Boolean) : [];
-                const total = ids.length;
+            async updateRecords(viewId, recordIds, recordData, options = {}) {
+                this._assertWriteOptions(options, 'updateRecords');
+                if (!Array.isArray(recordIds)) {
+                    throw new Error('KTL API error: updateRecords requires recordIds to be an array.');
+                }
+
+                if (!recordData || typeof recordData !== 'object' || Array.isArray(recordData)) {
+                    throw new Error('KTL API error: updateRecords requires recordData to be an object.');
+                }
+
+                const records = recordIds.filter(Boolean).map(id => ({ id, data: recordData }));
+                const opts = options || {};
+                let effectiveRefresh;
+                effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
+                const batchOptions = { ...opts };
+                delete batchOptions.refreshViews;
+
+                const total = records.length;
                 if (!total) return { total: 0, updated: 0, failed: 0 };
 
-                const opts = options || {};
-                const staggerMs = Math.max(0, Number(opts.staggerMs) || 0);
-                const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
                 let updated = 0;
                 let failed = 0;
                 let rateLimit429Count = 0;
                 let firstError = null;
                 const failedRecordIds = [];
-                const requestOptions = {
-                    ...opts,
-                    _on429: () => {
-                        rateLimit429Count += 1;
-                    }
-                };
-
-                const tasks = ids.map((recordId, index) => delay(staggerMs * index).then(() => this.updateRecord(viewId, recordId, recordData, [], requestOptions))
-                    .then(() => {
-                        updated += 1;
-                        if (typeof opts.onProgress === 'function')
-                            opts.onProgress({ updated, failed, total, recordId });
-                    })
-                    .catch((error) => {
-                        failed += 1;
-                        failedRecordIds.push(recordId);
-                        if (!firstError) firstError = error;
-                        if (typeof opts.onProgress === 'function')
-                            opts.onProgress({ updated, failed, total, recordId });
-                        if (!opts.continueOnError) throw error;
-                    }));
+                const { opts: batchOpts, staggerMs, workerCount, requestOptions } = this._buildBatchContext(total, batchOptions, () => {
+                    rateLimit429Count += 1;
+                });
 
                 try {
-                    if (opts.continueOnError) {
-                        await Promise.allSettled(tasks);
-                    } else {
-                        await Promise.all(tasks);
-                    }
+                    const batchResult = await this._runBatchWorkers({
+                        total,
+                        workerCount,
+                        staggerMs,
+                        continueOnError: batchOpts.continueOnError,
+                        execute: async (index) => {
+                            const { id: recordId, data } = records[index];
+                            try {
+                                await this.updateRecord(viewId, recordId, data, requestOptions);
+                                updated += 1;
+                                if (typeof batchOpts.onProgress === 'function')
+                                    batchOpts.onProgress({ updated, failed, total, recordId });
+                            } catch (error) {
+                                failed += 1;
+                                failedRecordIds.push(recordId);
+                                if (typeof batchOpts.onProgress === 'function')
+                                    batchOpts.onProgress({ updated, failed, total, recordId });
+                                if (!batchOpts.continueOnError)
+                                    throw error;
+                            }
+                        }
+                    });
+                    firstError = batchResult.firstError;
 
-                    await this._refreshAfterWrite(refreshViews);
+                    await this._refreshAfterWrite(effectiveRefresh);
 
                     // Log failed records if any (only after all retries exhausted)
-                    if (failedRecordIds.length > 0 && typeof ktl?.log?.addLog === 'function') {
-                        const recordList = failedRecordIds.join(', ');
-                        const errorMsg = `KEC_1027 - API update failed for view ${viewId}. Failed records (${failedRecordIds.length}/${total}): ${recordList}`;
-                        ktl.log.addLog(ktl.const.LS_APP_ERROR, errorMsg);
-                    }
+                    this._logBatchFailures('KEC_1029', 'update', viewId, failedRecordIds.length, total, `: ${failedRecordIds.join(', ')}`);
 
-                    if (firstError && !opts.continueOnError)
+                    if (firstError && !batchOpts.continueOnError)
                         throw firstError;
 
                     return { total, updated, failed };
                 } finally {
                     const processed = updated + failed;
-                    console.log(`[KTL API] Concurrent update summary for view ${viewId}: processed ${processed}/${total}, 429s ${rateLimit429Count}`);
+                    this._logBatchSummary('update', viewId, processed, total, rateLimit429Count);
                 }
             }
 
@@ -4726,12 +5173,14 @@ function Ktl($, appInfo) {
              * Delete a record in a view.
              * @param {string} viewId
              * @param {string} recordId
-             * @param {Array|string} [refreshViews]
              * @param {Object} [options]
+             * @param {Array|string} [options.refreshViews]
              * @returns {Promise<Object>}
              */
-            async deleteRecord(viewId, recordId, refreshViews, options = {}) {
+            async deleteRecord(viewId, recordId, options = {}) {
+                this._assertWriteOptions(options, 'deleteRecord');
                 const opts = options || {};
+                const effectiveRefresh = this._normalizeRefreshViews(opts.refreshViews);
                 const url = this._formatApiUrl(viewId, recordId);
                 return await this._enqueueWrite(async () => {
                     const result = await this._request(
@@ -4743,7 +5192,7 @@ function Ktl($, appInfo) {
                         },
                         opts.timeout
                     );
-                    await this._refreshAfterWrite(refreshViews);
+                    await this._refreshAfterWrite(effectiveRefresh);
                     return result;
                 });
             }
@@ -4752,63 +5201,60 @@ function Ktl($, appInfo) {
              * Delete multiple records in a view using write concurrency.
              * @param {string} viewId
              * @param {string[]} recordIds
-             * @param {Array|string} [refreshViews]
              * @param {Object} [options]
+             * @param {Array|string} [options.refreshViews]
              * @param {Function} [options.onProgress]
              * @param {number} [options.staggerMs=0]
-             * @param {boolean} [options.continueOnError=false]
+             * @param {boolean} [options.continueOnError=true]
              * @returns {Promise<{ total: number, deleted: number, failed: number }>}
              */
-            async deleteRecords(viewId, recordIds, refreshViews, options = {}) {
+            async deleteRecords(viewId, recordIds, options = {}) {
+                this._assertWriteOptions(options, 'deleteRecords');
                 const ids = Array.isArray(recordIds) ? recordIds.filter(Boolean) : [];
                 const total = ids.length;
                 if (!total) return { total: 0, deleted: 0, failed: 0 };
 
-                const opts = options || {};
-                const staggerMs = Math.max(0, Number(opts.staggerMs) || 0);
-                const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
                 let deleted = 0;
                 let failed = 0;
                 let rateLimit429Count = 0;
                 let firstError = null;
                 const failedRecordIds = [];
-                const requestOptions = {
-                    ...opts,
-                    _on429: () => {
-                        rateLimit429Count += 1;
-                    }
-                };
-
-                const tasks = ids.map((recordId, index) => delay(staggerMs * index).then(() => this.deleteRecord(viewId, recordId, [], requestOptions))
-                    .then(() => {
-                        deleted += 1;
-                        if (typeof opts.onProgress === 'function')
-                            opts.onProgress({ deleted, failed, total, recordId });
-                    })
-                    .catch((error) => {
-                        failed += 1;
-                        failedRecordIds.push(recordId);
-                        if (!firstError) firstError = error;
-                        if (typeof opts.onProgress === 'function')
-                            opts.onProgress({ deleted, failed, total, recordId });
-                        if (!opts.continueOnError) throw error;
-                    }));
+                const effectiveRefresh = this._normalizeRefreshViews(options?.refreshViews);
+                const batchOptions = { ...(options || {}) };
+                delete batchOptions.refreshViews;
+                const { opts, staggerMs, workerCount, requestOptions } = this._buildBatchContext(total, batchOptions, () => {
+                    rateLimit429Count += 1;
+                });
 
                 try {
-                    if (opts.continueOnError) {
-                        await Promise.allSettled(tasks);
-                    } else {
-                        await Promise.all(tasks);
-                    }
+                    const batchResult = await this._runBatchWorkers({
+                        total,
+                        workerCount,
+                        staggerMs,
+                        continueOnError: opts.continueOnError,
+                        execute: async (index) => {
+                            const recordId = ids[index];
+                            try {
+                                await this.deleteRecord(viewId, recordId, requestOptions);
+                                deleted += 1;
+                                if (typeof opts.onProgress === 'function')
+                                    opts.onProgress({ deleted, failed, total, recordId });
+                            } catch (error) {
+                                failed += 1;
+                                failedRecordIds.push(recordId);
+                                if (typeof opts.onProgress === 'function')
+                                    opts.onProgress({ deleted, failed, total, recordId });
+                                if (!opts.continueOnError)
+                                    throw error;
+                            }
+                        }
+                    });
+                    firstError = batchResult.firstError;
 
-                    await this._refreshAfterWrite(refreshViews);
+                    await this._refreshAfterWrite(effectiveRefresh);
 
                     // Log failed records if any (only after all retries exhausted)
-                    if (failedRecordIds.length > 0 && typeof ktl?.log?.addLog === 'function') {
-                        const recordList = failedRecordIds.join(', ');
-                        const errorMsg = `KEC_1027 - API delete failed for view ${viewId}. Failed records (${failedRecordIds.length}/${total}): ${recordList}`;
-                        ktl.log.addLog(ktl.const.LS_APP_ERROR, errorMsg);
-                    }
+                    this._logBatchFailures('KEC_1030', 'delete', viewId, failedRecordIds.length, total, `: ${failedRecordIds.join(', ')}`);
 
                     if (firstError && !opts.continueOnError)
                         throw firstError;
@@ -4816,7 +5262,7 @@ function Ktl($, appInfo) {
                     return { total, deleted, failed };
                 } finally {
                     const processed = deleted + failed;
-                    console.log(`[KTL API] Concurrent delete summary for view ${viewId}: processed ${processed}/${total}, 429s ${rateLimit429Count}`);
+                    this._logBatchSummary('delete', viewId, processed, total, rateLimit429Count);
                 }
             }
 
@@ -4826,10 +5272,19 @@ function Ktl($, appInfo) {
              * @returns {Promise<void|void[]>}
              */
             async refreshView(viewId) {
+                const refreshOne = async (id) => {
+                    if (!id) return;
+                    try {
+                        await ktl.views.refreshView(id);
+                    } catch (error) {
+                        this._log('View refresh failed', { viewId: id, error }, 'warn');
+                    }
+                };
+
                 if (Array.isArray(viewId)) {
-                    return Promise.all(viewId.map(id => this._refreshSingleView(id)));
+                    return Promise.all(viewId.map(id => refreshOne(id)));
                 }
-                return this._refreshSingleView(viewId);
+                return refreshOne(viewId);
             }
 
             /**
@@ -4855,6 +5310,10 @@ function Ktl($, appInfo) {
                 if (!filters) return {};
 
                 if (filters.match && filters.rules) {
+                    if (this._hasNestedFilterGroups(filters)) {
+                        throw new Error('KTL API error: nested filter groups are not supported by Knack. Use flat rules or run separate queries and merge results.');
+                    }
+
                     return { filters: JSON.stringify(filters) };
                 }
 
@@ -4900,6 +5359,24 @@ function Ktl($, appInfo) {
                 });
 
                 return formatted;
+            }
+
+            /**
+             * Returns true when any rule contains a nested match/rules group.
+             * @param {Object} filters
+             * @returns {boolean}
+             * @private
+             */
+            _hasNestedFilterGroups(filters) {
+                if (!filters || !Array.isArray(filters.rules)) return false;
+
+                const hasNestedRule = (rule) => {
+                    if (!rule || typeof rule !== 'object') return false;
+                    if (rule.match && Array.isArray(rule.rules)) return true;
+                    return false;
+                };
+
+                return filters.rules.some(hasNestedRule);
             }
 
             /**
@@ -4993,6 +5470,149 @@ function Ktl($, appInfo) {
                     q.nextDrainAt = 0;
                     this._drainWriteQueue();
                 }, wait);
+            }
+
+            /**
+             * Build common batch execution settings for bulk write methods.
+             * @param {number} total
+             * @param {Object} [options]
+             * @param {Function} [on429]
+             * @returns {{opts:Object,staggerMs:number,workerCount:number,requestOptions:Object}}
+             * @private
+             */
+            _buildBatchContext(total, options = {}, on429 = () => { }) {
+                this._assertWriteOptions(options, 'batch operation');
+                const opts = options || {};
+                const continueOnError = opts.continueOnError !== false;
+                const staggerMs = Math.max(0, Number(opts.staggerMs) || 0);
+                const queue = this._writeQueue || {};
+                const workerCount = Math.max(1, Math.min(total, Math.floor(queue.current || this.options.writeConcurrency || 1)));
+                const requestOptions = {
+                    ...opts,
+                    continueOnError,
+                    _on429: () => {
+                        typeof on429 === 'function' && on429();
+                    }
+                };
+
+                return { opts: { ...opts, continueOnError }, staggerMs, workerCount, requestOptions };
+            }
+
+            /**
+             * Log standardized summary for bulk API operations.
+             * @param {'create'|'update'|'delete'} operation
+             * @param {string} viewId
+             * @param {number} processed
+             * @param {number} total
+             * @param {number} rateLimit429Count
+             * @private
+             */
+            _logBatchSummary(operation, viewId, processed, total, rateLimit429Count) {
+                this._log(
+                    `Concurrent ${operation} summary`,
+                    { viewId, processed, total, rateLimit429Count },
+                    'info'
+                );
+            }
+
+            /**
+             * Log standardized failure details for bulk API operations.
+             * @param {string} code
+             * @param {'create'|'update'|'delete'} operation
+             * @param {string} viewId
+             * @param {number} failedCount
+             * @param {number} total
+             * @param {string} detailsSuffix
+             * @private
+             */
+            _logBatchFailures(code, operation, viewId, failedCount, total, detailsSuffix = '') {
+                if (failedCount <= 0 || typeof ktl?.log?.addLog !== 'function') return;
+                const errorMsg = `${code} - API ${operation} failed for view ${viewId}. Failed records (${failedCount}/${total})${detailsSuffix}`;
+                ktl.log.addLog(ktl.const.LS_APP_ERROR, errorMsg);
+            }
+
+            /**
+             * Run indexed tasks using bounded worker concurrency.
+             * @param {Object} config
+             * @param {number} config.total
+             * @param {number} config.workerCount
+             * @param {number} [config.staggerMs=0]
+             * @param {boolean} [config.continueOnError=true]
+             * @param {(index:number)=>Promise<void>} config.execute
+             * @returns {Promise<{firstError: Error|null}>}
+             * @private
+             */
+            async _runBatchWorkers(config = {}) {
+                const total = Number.isFinite(config.total) ? config.total : 0;
+                const workerCount = Number.isFinite(config.workerCount) ? Math.max(1, Math.floor(config.workerCount)) : 1;
+                const staggerMs = Number.isFinite(config.staggerMs) ? Math.max(0, Math.floor(config.staggerMs)) : 0;
+                const continueOnError = config.continueOnError !== false;
+                const execute = typeof config.execute === 'function' ? config.execute : null;
+
+                if (!execute)
+                    throw new TypeError('KTL API error: _runBatchWorkers requires an execute callback');
+
+                if (total <= 0)
+                    return { firstError: null };
+
+                const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+                let nextIndex = 0;
+                let stopScheduling = false;
+                let firstError = null;
+
+                const runWorker = async () => {
+                    while (true) {
+                        if (stopScheduling && !continueOnError)
+                            return;
+
+                        if (staggerMs > 0)
+                            await delay(staggerMs);
+
+                        if (stopScheduling && !continueOnError)
+                            return;
+
+                        const index = nextIndex;
+                        nextIndex += 1;
+                        if (index >= total)
+                            return;
+
+                        try {
+                            await execute(index);
+                        } catch (error) {
+                            if (!firstError) firstError = error;
+                            if (!continueOnError)
+                                stopScheduling = true;
+                        }
+                    }
+                };
+
+                await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+                return { firstError };
+            }
+
+            /**
+             * Check whether a value is a plain object.
+             * @param {*} value
+             * @returns {boolean}
+             * @private
+             */
+            _isPlainObject(value) {
+                if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+                const proto = Object.getPrototypeOf(value);
+                return proto === Object.prototype || proto === null;
+            }
+
+            /**
+             * Assert that method options are a plain object when provided.
+             * @param {*} options
+             * @param {string} methodName
+             * @private
+             */
+            _assertWriteOptions(options, methodName) {
+                if (options === undefined) return;
+                if (!this._isPlainObject(options)) {
+                    throw new Error(`KTL API error: ${methodName} options must be a plain object.`);
+                }
             }
 
             /**
@@ -5116,6 +5736,23 @@ function Ktl($, appInfo) {
             }
 
             /**
+             * Build headers for multipart asset upload calls.
+             * @returns {Object}
+             * @private
+             */
+            _buildUploadHeaders() {
+                const headers = {
+                    'X-Knack-Application-Id': Knack.application_id,
+                    'X-Knack-REST-API-Key': 'knack'
+                };
+                const token = typeof Knack?.getUserToken === 'function' ? Knack.getUserToken() : null;
+                if (token) {
+                    headers.Authorization = token;
+                }
+                return headers;
+            }
+
+            /**
              * Format API URL for view-based operations.
              * @param {string} viewId
              * @param {string} [recordId]
@@ -5144,7 +5781,9 @@ function Ktl($, appInfo) {
             }
 
             /**
-             * Perform an Ajax request with retries, backoff, and timeout.
+             * Perform an HTTP request with retries, backoff, and timeout.
+             * Identical concurrent GET requests are deduplicated: the second caller shares the
+             * first in-flight promise rather than dispatching a redundant fetch.
              * @param {string} url
              * @param {Object} options
              * @param {number} [timeoutOverride]
@@ -5152,6 +5791,34 @@ function Ktl($, appInfo) {
              * @private
              */
             async _request(url, options = {}, timeoutOverride) {
+                const method = ((options || {}).method || 'GET').toUpperCase();
+
+                // Deduplicate identical concurrent GET requests.
+                if (method === 'GET') {
+                    const timeoutKey = Number.isFinite(timeoutOverride) ? timeoutOverride : 'default';
+                    const key = `${url}::${timeoutKey}`;
+                    if (this._inflightGets.has(key)) {
+                        return this._inflightGets.get(key);
+                    }
+                    const promise = this._requestInner(url, options, timeoutOverride).finally(() => {
+                        this._inflightGets.delete(key);
+                    });
+                    this._inflightGets.set(key, promise);
+                    return promise;
+                }
+
+                return this._requestInner(url, options, timeoutOverride);
+            }
+
+            /**
+             * Inner fetch-with-retry implementation, called by _request.
+             * @param {string} url
+             * @param {Object} options
+             * @param {number} [timeoutOverride]
+             * @returns {Promise<Object>}
+             * @private
+             */
+            async _requestInner(url, options = {}, timeoutOverride) {
                 const maxRetries = this.options.maxRetries;
                 const maxAttempts = 1 + maxRetries;
                 const retryOnStatus = this.options.retryOnStatus;
@@ -5161,36 +5828,46 @@ function Ktl($, appInfo) {
                 const timeoutMs = Number.isFinite(timeoutOverride) ? timeoutOverride : this.options.timeout;
 
                 let attempt = 0;
-                const { rateLimitHandler, onRateLimit429, ...ajaxOptions } = options || {};
+                const { rateLimitHandler, onRateLimit429, ...requestOptions } = options || {};
 
                 this._toggleSpinner(true);
 
                 try {
                     while (attempt < maxAttempts) {
                         attempt += 1;
+                        const method = (requestOptions.method || 'GET').toUpperCase();
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
                         try {
-                            const result = await new Promise((resolve, reject) => {
-                                $.ajax({
-                                    url: url,
-                                    type: ajaxOptions.method || 'GET',
-                                    crossDomain: true,
-                                    timeout: timeoutMs,
-                                    headers: this._buildHeaders(),
-                                    data: ajaxOptions.body,
-                                    success: function (data) {
-                                        resolve(data);
-                                    },
-                                    error: function (jqXHR) {
-                                        reject(jqXHR);
-                                    }
-                                });
-                            });
+                            const headers = requestOptions.headers || this._buildHeaders();
+                            const fetchOptions = {
+                                method,
+                                headers,
+                                signal: controller.signal
+                            };
 
-                            this._log('API response', result);
-                            return result;
-                        } catch (jqXHR) {
-                            const status = jqXHR?.status;
+                            if (requestOptions.body !== undefined && requestOptions.body !== null && !['GET', 'HEAD'].includes(method)) {
+                                fetchOptions.body = requestOptions.body;
+                            }
+
+                            const response = await fetch(url, fetchOptions);
+                            const responseText = await response.text();
+
+                            if (response.ok) {
+                                const result = responseText ? (() => {
+                                    try {
+                                        return JSON.parse(responseText);
+                                    } catch (e) {
+                                        return responseText;
+                                    }
+                                })() : {};
+
+                                this._log('API response', result);
+                                return result;
+                            }
+
+                            const status = response?.status;
 
                             if (status === 429 && typeof onRateLimit429 === 'function') {
                                 onRateLimit429();
@@ -5198,12 +5875,17 @@ function Ktl($, appInfo) {
 
                             const isRetryable = retryOnStatus.includes(status);
                             if (!isRetryable || attempt >= maxAttempts) {
-                                throw this._buildRequestError(jqXHR);
+                                throw this._buildRequestError({
+                                    status,
+                                    statusText: response?.statusText,
+                                    responseText,
+                                    headers: response?.headers
+                                });
                             }
 
                             const retryIndex = attempt - 1;
                             const backoffDelay = this._computeBackoffMs(baseDelay, maxDelay, retryIndex);
-                            const retryAfterDelay = this._getRetryAfterDelayMs(jqXHR);
+                            const retryAfterDelay = this._getRetryAfterDelayMs(response);
                             const delay = status === 429
                                 ? Math.max(backoffDelay, Number(min429Delay) || 0, retryAfterDelay)
                                 : backoffDelay;
@@ -5214,6 +5896,34 @@ function Ktl($, appInfo) {
 
                             this._log('Retrying request', { status, attempt, delay }, 'warn');
                             await new Promise(resolve => setTimeout(resolve, delay));
+                        } catch (error) {
+                            const isTimeout = error?.name === 'AbortError';
+                            if (isTimeout) {
+                                throw this._buildRequestError({
+                                    status: 0,
+                                    statusText: 'Request timeout',
+                                    responseText: ''
+                                });
+                            }
+
+                            // Re-throw errors already structured by _buildRequestError (e.g. thrown
+                            // for non-retryable HTTP status codes above) without a second pass.
+                            if (error instanceof Error && error.status !== undefined) {
+                                throw error;
+                            }
+
+                            const status = error?.status;
+                            const isRetryable = retryOnStatus.includes(status);
+                            if (!isRetryable || attempt >= maxAttempts) {
+                                throw this._buildRequestError(error);
+                            }
+
+                            const retryIndex = attempt - 1;
+                            const delay = this._computeBackoffMs(baseDelay, maxDelay, retryIndex);
+                            this._log('Retrying request', { status, attempt, delay }, 'warn');
+                            await new Promise(resolve => setTimeout(resolve, delay));
+                        } finally {
+                            clearTimeout(timeoutId);
                         }
                     }
                 } finally {
@@ -5224,14 +5934,16 @@ function Ktl($, appInfo) {
             }
 
             /**
-             * Build a structured error from a jQuery XHR object.
+             * Build a structured error from an HTTP/jqXHR error-like object.
              * @param {Object} jqXHR
              * @returns {Error}
              * @private
              */
             _buildRequestError(jqXHR) {
                 const status = jqXHR?.status || 0;
-                const responseText = jqXHR?.responseText || '';
+                const responseText = typeof jqXHR?.responseText === 'string'
+                    ? jqXHR.responseText
+                    : (typeof jqXHR?.body === 'string' ? jqXHR.body : '');
                 let message = jqXHR?.statusText || 'Unknown error';
 
                 try {
@@ -5269,9 +5981,15 @@ function Ktl($, appInfo) {
              * @private
              */
             _getRetryAfterDelayMs(jqXHR) {
-                if (!jqXHR || typeof jqXHR.getResponseHeader !== 'function') return 0;
+                if (!jqXHR) return 0;
 
-                const retryAfter = jqXHR.getResponseHeader('Retry-After');
+                let retryAfter = null;
+                if (typeof jqXHR.getResponseHeader === 'function') {
+                    retryAfter = jqXHR.getResponseHeader('Retry-After');
+                } else if (jqXHR.headers && typeof jqXHR.headers.get === 'function') {
+                    retryAfter = jqXHR.headers.get('Retry-After');
+                }
+
                 if (!retryAfter) return 0;
 
                 const seconds = Number(retryAfter);
@@ -5301,7 +6019,7 @@ function Ktl($, appInfo) {
                 }
 
                 try {
-                    const userRoles = Knack.getUserRoleNames();
+                    const userRoles = ktl.account.getUserRoles();
                     this._canShowLogs = this.options.developerRoles.some(role => userRoles.includes(role));
                 } catch (error) {
                     this._canShowLogs = false;
@@ -5328,6 +6046,21 @@ function Ktl($, appInfo) {
             }
 
             /**
+             * Format bytes into a human-readable label.
+             * @param {number} bytes
+             * @returns {string}
+             * @private
+             */
+            _formatByteSize(bytes) {
+                if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
+                const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+                if (bytes === 0) return '0 B';
+                const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+                const value = bytes / Math.pow(1024, exponent);
+                return `${value.toFixed(exponent === 0 ? 0 : 2)} ${units[exponent]}`;
+            }
+
+            /**
              * Refresh views after write operations.
              * @param {string|string[]} refreshViews
              * @returns {Promise<void|void[]>}
@@ -5339,18 +6072,22 @@ function Ktl($, appInfo) {
             }
 
             /**
-             * Refresh a single view with fallbacks.
-             * @param {string} viewId
-             * @returns {Promise<void>}
+             * Normalize refresh target input to a valid view id string or string array.
+             * @param {string|string[]|*} refreshViews
+             * @returns {string|string[]|null}
              * @private
              */
-            async _refreshSingleView(viewId) {
-                if (!viewId) return;
-                try {
-                    await ktl.views.refreshView(viewId);
-                } catch (error) {
-                    this._log('View refresh failed', { viewId, error }, 'warn');
+            _normalizeRefreshViews(refreshViews) {
+                if (typeof refreshViews === 'string') {
+                    return refreshViews;
                 }
+
+                if (Array.isArray(refreshViews)) {
+                    const normalized = refreshViews.filter(viewId => typeof viewId === 'string' && viewId.length);
+                    return normalized.length ? normalized : null;
+                }
+
+                return null;
             }
 
             /**
@@ -5395,62 +6132,190 @@ function Ktl($, appInfo) {
                 return apiInstance.canLog();
             },
 
+            /**
+             * Get records from a view.
+             * @param {string} viewId
+             * @param {Object} [options]
+             * @returns {Promise<Array<Object>|Object>}
+             */
             getRecords: function (...args) {
                 return apiInstance.getRecords(...args);
             },
 
+            /**
+             * Get all records from a view across pages.
+             * @param {string} viewId
+             * @param {Object} [options]
+             * @returns {Promise<Array<Object>>}
+             */
             getAllRecords: function (...args) {
                 return apiInstance.getAllRecords(...args);
             },
 
+            /**
+             * Fetch a single record by ID.
+             * @param {string} viewId
+             * @param {string} recordId
+             * @param {Object} [options]
+             * @returns {Promise<Object>}
+             */
             getRecord: function (...args) {
                 return apiInstance.getRecord(...args);
             },
 
-            getRecordChildren: function (...args) {
-                return apiInstance.getRecordChildren(...args);
+            /**
+             * Fetch child records connected to a parent record.
+             * @param {string} viewId
+             * @param {string} recordId
+             * @param {string} connectionSlug
+             * @param {Object} [options]
+             * @returns {Promise<Array<Object>|Object>}
+             */
+            getChildRecords: function (...args) {
+                return apiInstance.getChildRecords(...args);
             },
 
-            getAllRecordChildren: function (...args) {
-                return apiInstance.getAllRecordChildren(...args);
+            /**
+             * Fetch all connected child records across pages.
+             * @param {string} viewId
+             * @param {string} recordId
+             * @param {string} connectionSlug
+             * @param {Object} [options]
+             * @returns {Promise<Array<Object>>}
+             */
+            getAllChildRecords: function (...args) {
+                return apiInstance.getAllChildRecords(...args);
             },
 
+            /**
+             * Create a record in a view.
+             * @param {string} viewId
+             * @param {Object} recordData
+             * @param {Object} [options]
+             * @param {Array|string} [options.refreshViews]
+             * @returns {Promise<Object>}
+             */
             createRecord: function (...args) {
                 return apiInstance.createRecord(...args);
             },
 
+            /**
+             * Create multiple records in a view.
+             * @param {string} viewId
+             * @param {Object[]} recordsData
+             * @param {Object} [options]
+             * @param {Array|string} [options.refreshViews]
+             * @returns {Promise<{ total: number, created: number, failed: number, records: Object[] }>}
+             */
             createRecords: function (...args) {
                 return apiInstance.createRecords(...args);
             },
 
+            /**
+             * Upload a file or image asset.
+             * @param {File|Blob} file
+             * @param {Object} [options]
+             * @returns {Promise<Object>}
+             */
+            uploadAsset: function (...args) {
+                return apiInstance.uploadAsset(...args);
+            },
+
+            /**
+             * Update a record in a view.
+             * @param {string} viewId
+             * @param {string} recordId
+             * @param {Object} recordData
+             * @param {Object} [options]
+             * @param {Array|string} [options.refreshViews]
+             * @returns {Promise<Object>}
+             */
             updateRecord: function (...args) {
                 return apiInstance.updateRecord(...args);
             },
 
+            /**
+             * Update multiple records in a view.
+             * @param {string} viewId
+             * @param {string[]} recordIds
+             * @param {Object} recordData
+             * @param {Object} [options]
+             * @param {Array|string} [options.refreshViews]
+             * @returns {Promise<{ total: number, updated: number, failed: number }>}
+             */
             updateRecords: function (...args) {
                 return apiInstance.updateRecords(...args);
             },
 
+            /**
+             * Delete a record in a view.
+             * @param {string} viewId
+             * @param {string} recordId
+             * @param {Object} [options]
+             * @param {Array|string} [options.refreshViews]
+             * @returns {Promise<Object>}
+             */
             deleteRecord: function (...args) {
                 return apiInstance.deleteRecord(...args);
             },
 
+            /**
+             * Delete multiple records in a view.
+             * @param {string} viewId
+             * @param {string[]} recordIds
+             * @param {Object} [options]
+             * @param {Array|string} [options.refreshViews]
+             * @returns {Promise<{ total: number, deleted: number, failed: number }>}
+             */
             deleteRecords: function (...args) {
                 return apiInstance.deleteRecords(...args);
             },
 
+            /**
+             * Find records by field/value matching.
+             * @param {string} viewId
+             * @param {string} fieldId
+             * @param {*} value
+             * @param {Object} [options]
+             * @returns {Promise<Array<Object>>}
+             */
+            findRecords: function (...args) {
+                return apiInstance.findRecords(...args);
+            },
+
+            /**
+             * Refresh one or more views.
+             * @param {string|string[]} viewId
+             * @returns {Promise<void|void[]>}
+             */
             refreshView: function (...args) {
                 return apiInstance.refreshView(...args);
             },
 
+            /**
+             * Build Knack filter query params.
+             * @param {Array<Object>|Object} filters
+             * @returns {Object}
+             */
             buildFilters: function (...args) {
                 return apiInstance.buildFilters(...args);
             },
 
+            /**
+             * Build Knack sorter query params.
+             * @param {Array<Object>|Object} sorters
+             * @returns {Object}
+             */
             buildSorters: function (...args) {
                 return apiInstance.buildSorters(...args);
             },
 
+            /**
+             * Fetch application details.
+             * @param {string} [applicationId]
+             * @param {Object} [options]
+             * @returns {Promise<Object>}
+             */
             getApplication: function (...args) {
                 return apiInstance.getApplication(...args);
             }
@@ -5743,7 +6608,15 @@ function Ktl($, appInfo) {
             if (e.target.classList) {
                 if (e.target.closest('.cell-editable .cell-edit')) {
                     ktl.core.waitSelector('#cell-editor .kn-input, .redactor-editor')
-                        .then(() => { ktl.fields.ktlInlineEditActive(e); })
+                        .then(() => {
+                            ktl.fields.ktlInlineEditActive(e);
+                            //Move focus into the cell editor so the background page doesn't catch arrow keys (e.g. up/down scrolling the underlying table).
+                            const editor = document.querySelector('#cell-editor');
+                            if (editor && !editor.contains(document.activeElement)) {
+                                const focusable = editor.querySelector('input.ui-autocomplete-input, input:not([type="hidden"]), textarea, .redactor-editor');
+                                focusable && focusable.focus();
+                            }
+                        })
                         .catch(err => { console.log('Failed waiting for cell editor.', err, e); });
                 }
             }
@@ -6394,7 +7267,7 @@ function Ktl($, appInfo) {
                                         if (typeof fieldsAr === 'object') {
                                             for (var i = 0; i < fieldsAr.length; i++) {
                                                 var field = Knack.objects.getField(type === 'form' ? fieldsAr[i].id : fieldsAr[i].key);
-                                                if (typeof field.attributes.meta === 'object') {
+                                                if (typeof field?.attributes?.meta === 'object') {
                                                     var fldDescr = field.attributes.meta && field.attributes.meta.description;
                                                     if (fldDescr && fldDescr.includes(descr)) {
                                                         resolve({ viewId: viewId, fieldId: field.attributes.key });
@@ -6526,6 +7399,12 @@ function Ktl($, appInfo) {
 
             getFieldKeywords: function (fieldId, fieldKeywords = {}) {
                 if (!fieldId) return;
+                // Fast path: keywords were pre-parsed at startup into ktlKeywords.
+                if (ktlKeywords[fieldId]) {
+                    fieldKeywords[fieldId] = ktlKeywords[fieldId];
+                    return fieldKeywords;
+                }
+                // Fallback: field was not in ktlKeywords (e.g. dynamically added or no keywords).
                 var fieldDesc = ktl.fields.getFieldDescription(fieldId);
                 if (fieldDesc) {
                     fieldDesc = fieldDesc.replace(/(\r\n|\n|\r)|<[^>]*>/gm, ' ').replace(/ {2,}/g, ' ').trim();
@@ -7132,9 +8011,10 @@ function Ktl($, appInfo) {
             hideFields: function (viewId, keywords) {
                 if (!viewId) return;
 
-                if ($('.kn-modal').length && !$('#' + viewId).children().length) {
+                if ($('.kn-modal').length && $('#' + viewId).length && !$('#' + viewId).children().length) {
                     // Issue #458
                     // View not rendered yet: Need special processing for modals, where hidden fields are briefly shown before the kw is applied.
+                    // Require the view element to actually exist — synthetic IDs like `view_XXX_celleditor` have no DOM node and would otherwise hide the whole modal scene.
                     $('.kn-modal .kn-scene').addClass('ktlHidden_viewTemp_modal');
 
                     //Quick fix until we find an elegant solution to issue #537, which was caused by fixing issue #458.
@@ -7437,12 +8317,17 @@ function Ktl($, appInfo) {
         });
 
         const debouncedFormContentHasChanged = debounce(formContentHasChanged, 500);
-        $(document).on('input', function (event) {
+        $(document).on('input focusout', function (event) {
             if (!event
+                || !event.target
                 || !event.target.type
                 || event.target.className.includes('knack-date')
                 || $(event.target).closest('.chzn-container').length)
                 return;
+
+            const targetKnInput = $(event.target).closest('.kn-input');
+            const isChosenConnectionField = targetKnInput.hasClass('kn-input-connection') && targetKnInput.find('.chzn-select').length > 0;
+            if (isChosenConnectionField) return;
 
             if ((event.type === 'focusout' && event.relatedTarget) || event.type === 'input')
                 debouncedFormContentHasChanged(event.target);
@@ -7499,6 +8384,11 @@ function Ktl($, appInfo) {
 
             const knInput = element.closest('.kn-input');
             if (!knInput) return;
+
+            if (knInput.classList.contains('kn-input-connection')
+                && knInput.querySelector('.chzn-select')
+                && !(element instanceof HTMLSelectElement))
+                return;
 
             const fieldId = knInput.getAttribute('data-input-id');
             if (!fieldId) return;
@@ -8597,6 +9487,13 @@ function Ktl($, appInfo) {
                     $(document).trigger('KTL.dropDownValueChanged', { viewId: viewId, fieldId: fieldId, records: records });
                 }
             },
+
+            //Apply a connection field value (label:recordId[;label:recordId...]) to a form field.
+            //Supports chosen (single/multi) dropdowns and connection-picker radio/checkbox.
+            //Returns true on success, false otherwise.
+            applyConnectionFieldValue: function (params) {
+                return applyConnectionFieldValue(params);
+            },
         }
     })(); //persistentForm
 
@@ -9122,7 +10019,7 @@ function Ktl($, appInfo) {
 
             // Inline edit CSS - always generate, class only added if feature enabled at runtime
             css += `
-                td.cell-edit.ktlInlineEditableCellsStyle:not([style*="background"]):not(.bulkEditSelectedRow) {
+                td.cell-edit.ktlInlineEditableCellsStyle:not([style*="background"]):not(.bulkEditSelectedRow):not(.ktlNoInlineEdit) {
                     background-color: var(--ktlInlineEditableCellsBgColor) !important;
                 }
             `;
@@ -9653,12 +10550,30 @@ function Ktl($, appInfo) {
 
             if (linkedViewIds && !!masterView.filters && (masterView.filters.length === undefined || masterView.filters.length > 0)) {
                 linkedViewIds.forEach((linkedViewId) => {
-                    if (Knack.models[linkedViewId].view.type === 'report') {
-                        Knack.models[linkedViewId].view.rows.forEach(row => {
+                    const linkedModel = Knack.models[linkedViewId];
+                    if (!linkedModel) return;
+
+                    if (linkedModel.view.type === 'report') {
+                        linkedModel.view.rows.forEach(row => {
                             row.reports.forEach(report => {
                                 applyUserFilterToReportView(linkedViewId, report, masterView.filters);
                             });
                         });
+                    } else if (linkedModel.view.type === 'calendar') {
+                        //Issue #617: a saved filter makes the master render twice on scene entry. Two overlapping model.fetch()
+                        //on a calendar interleave Knack's async render/renderCalendar and stack two fullCalendar instances.
+                        //Filters are idempotent, so skip re-applying the same one, and refetch events instead of a full fetch.
+                        const filtersJson = JSON.stringify(masterView.filters);
+                        if (linkedModel.ktlLfFilters === filtersJson) return;
+                        linkedModel.ktlLfFilters = filtersJson;
+
+                        updateFilters(linkedViewId, masterView.filters);
+
+                        const fc = Knack.views[linkedViewId] && Knack.views[linkedViewId].$('.knack-calendar').data('fullCalendar');
+                        if (fc)
+                            Knack.views[linkedViewId].$('.knack-calendar').fullCalendar('refetchEvents');
+
+                        $(document).trigger('KTL.filterApplied', linkedViewId);
                     } else if (masterView.type === 'table') {
                         const srchVal = $(`#${masterViewId} .table-keyword-search input`).val() || '';
 
@@ -10087,7 +11002,7 @@ function Ktl($, appInfo) {
             var filterIndex = thisFilter.index;
             var isPublic = thisFilter.filterSrc[viewId].filters[filterIndex].public;
 
-            if (isPublic && !Knack.getUserRoleNames().includes('Public Filters')) {
+            if (isPublic && !ktl.account.getUserRoles().includes('Public Filters')) {
                 $('.menuDiv').remove(); //JIC
                 return;
             }
@@ -10197,7 +11112,7 @@ function Ktl($, appInfo) {
             ul.appendChild(listRename);
 
             //Public Filters, visible to all users.
-            if (Knack.getUserRoleNames().includes('Public Filters')) {
+            if (ktl.account.getUserRoles().includes('Public Filters')) {
                 const listPublicFilters = document.createElement('li');
                 listPublicFilters.innerHTML = '<i class="fa fa-gift" style="margin-top: 2px;"></i> Public: ';
                 listPublicFilters.style.marginBottom = '8px';
@@ -10353,7 +11268,7 @@ function Ktl($, appInfo) {
                     animation: 250,
                     easing: "cubic-bezier(1, 0, 0, 1)",
                     onMove: function (/**Event*/evt, /**Event*/originalEvent) {
-                        if (evt.dragged.filter.public && !Knack.getUserRoleNames().includes('Public Filters')) {
+                        if (evt.dragged.filter.public && !ktl.account.getUserRoles().includes('Public Filters')) {
                             contextMenuFilterEnabled = true;
                             return false; //Cancel
                         }
@@ -10492,7 +11407,7 @@ function Ktl($, appInfo) {
 
                     //Lock Public Filters button - to disable public Filters' automatic updates and triggering constant uploads.
                     let lockPublicFiltersButton;
-                    if (Knack.getUserRoleNames().includes('Public Filters')) {
+                    if (ktl.account.getUserRoles().includes('Public Filters')) {
                         lockPublicFiltersButton = ktl.fields.addButton(filterCtrlDiv, 'Lock Filters', FILTER_BTN_STYLE + (monochromeButtons ? '' : '; background-color: #b3d0bd'),
                             ['kn-button', 'is-small'],
                             filterDivId + '_' + LOCK_FILTERS_BTN + '_' + FILTER_BTN_SUFFIX);
@@ -10655,7 +11570,7 @@ function Ktl($, appInfo) {
                     filterSrc = filter.filterSrc;
                     type = filter.type;
                     if (filter.index >= 0) {
-                        if (type === LS_UFP && !Knack.getUserRoleNames().includes('Public Filters')) {
+                        if (type === LS_UFP && !ktl.account.getUserRoles().includes('Public Filters')) {
                             alert('You can\'t overwrite Public Filters.\nChoose another name.');
                             return;
                         } else if (!confirm(filterName + ' already exists.  Do you want to overwrite?'))
@@ -11031,7 +11946,7 @@ function Ktl($, appInfo) {
 
                                         ktl.core.ktlDevToolsAdjustPositionAndSave(debugWnd, devToolStorageName, savedPosition);
                                     } else {
-                                        const position = ktl.core.centerElementOnScreen(debugWnd);
+                                        const position = ktl.core.devToolAutoPosition(debugWnd);
                                         ktl.core.ktlDevToolsAdjustPositionAndSave(debugWnd, devToolStorageName, position);
                                     }
 
@@ -11201,6 +12116,9 @@ function Ktl($, appInfo) {
         var gotoDateObj = new Date();
         var prevType = '';
         var prevStartDate = '';
+        // Cache for getAllFieldsWithKeywordsInView results — keyed by viewId.
+        // Keywords and view field lists are static after startup, so this is safe to persist for the session.
+        const _fieldsWithKwCache = new Map();
         let chooseGridColumnsGlobalListenerAdded = false;
         let chooseGridColumnsGlobalClickHandler = null;
         let chooseGridColumnsGlobalKeyHandler = null;
@@ -11412,7 +12330,6 @@ function Ktl($, appInfo) {
                 }
 
                 ktl.bulkOps.prepareBulkOps(view, data);
-                ktl.views.fixTableRowsAlignment(viewId);
                 ktlProcessKeywords(view, data);
             }
         }
@@ -11641,6 +12558,7 @@ function Ktl($, appInfo) {
                     keywords._click && performClick(viewId, keywords, data);
                     keywords._mail && sendBulkEmails(viewId, keywords, data);
                     keywords._dnd && dragAndDrop(viewId, keywords);
+                    keywords._cg && collapsibleGroups(viewId, keywords);
                     keywords._cpyfrom && copyRecordsFromView(viewId, keywords, data);
                     keywords._scs && sortedColumnStyle(viewId, keywords);
                     keywords._cmr && closeModalAndRefreshViews(viewId, keywords);
@@ -11668,6 +12586,9 @@ function Ktl($, appInfo) {
                 //This section is for features that can be applied with or without a keyword.
                 //When used without a keyword, they are controlled by a global flag.
                 headerAlignment(view, keywords);
+
+                if (!(keywords && keywords._cg) && ktlKeywords._cgAll)
+                    collapsibleGroups(viewId, keywords);
 
                 //This section is for keywords that are supported by views and fields.
                 ktl.fields.hideFields(viewId, keywords);
@@ -11705,6 +12626,8 @@ function Ktl($, appInfo) {
                 })
 
                 processViewKeywords && processViewKeywords(view, keywords, data);
+
+                ktl.views.fixTableRowsAlignment(viewId);
             }
             catch (err) { console.log('err', err); };
         }
@@ -11881,8 +12804,13 @@ function Ktl($, appInfo) {
 
         $(document).keydown(function (e) {
             if (e.keyCode === 27) { //Esc
-                $('.close-popover').trigger('click'); //Exit inline editing
-                $('#asset-viewer > div > a').trigger('click'); //asset-viewer is the image viewer.
+                //Close one layer at a time so a single Escape doesn't dismiss both an inline popover and the modal underneath it.
+                const popover = $('.close-popover:visible');
+                if (popover.length) { popover.trigger('click'); return; }
+
+                const assetViewer = $('#asset-viewer > div > a');
+                if (assetViewer.length) { assetViewer.trigger('click'); return; }
+
                 $('.close-modal').trigger('click'); //Modal page.
             } else if (e.keyCode === 37) //Left arrow
                 $('#asset-viewer > div > div > a.kn-asset-prev').trigger('click');
@@ -12438,7 +13366,7 @@ function Ktl($, appInfo) {
                 { operation: 'bulkAction', role: 'Bulk Action' },
             ];
 
-            const userRoles = Knack.getUserRoleNames();
+            const userRoles = ktl.account.getUserRoles();
             for (const op of bulkOps) {
                 if (ktl.core.getCfg().enabled.bulkOps[op.operation] && userRoles.includes(op.role)) {
                     return true;
@@ -12452,60 +13380,136 @@ function Ktl($, appInfo) {
             if (!keywords[kw]) return;
 
             const { key: viewId, type: viewType, columns } = view;
+            const keywordsArray = ktl.core.getKeywordsByType(viewId, kw);
 
-            if (keywords[kw].length && keywords[kw][0].options) {
-                const options = keywords[kw][0].options;
-                if (!ktl.core.hasRoleAccess(options)) return;
-            }
-
-            if (viewType === 'table' || viewType === 'search') {
-                columns.forEach(column => {
-                    const selector = `#${viewId} tbody td`;
-
-                    if (column.type === 'field') {
-                        $(`${selector}.${column.field.key}`).addClass('ktlNoInlineEdit');
-                    }
-                    else {
-                        $(selector).find('a').removeAttr('href').addClass('ktlLinkDisabled');
-                    }
-                });
-
-                $(document).on('KTL.BulkOperations.Updated', () => {
-                    $(`#${viewId} .bulkEditCb`).attr('disabled', 'disabled');
-                });
+            if (!keywordsArray.length) {
+                applyDisable(viewId, viewType, columns);
             } else {
-                let elementSelector;
-                if (viewType === 'details' || viewType === 'list') {
-                    elementSelector = `#${viewId} .kn-detail-body`;
-                } else if (viewType === 'form') {
-                    elementSelector = `#${viewId} .kn-input`;
-                } else if (viewType === 'menu') {
-                    elementSelector = `#${viewId} li`;
-                }
+                keywordsArray.forEach(keyword => {
+                    if (keyword.options && !ktl.core.hasRoleAccess(keyword.options)) return;
 
-                const elements = $(elementSelector);
+                    if (keyword.options && keyword.options.ktlCond) {
+                        const viewEl = $('#' + viewId);
+                        viewEl.addClass('ktlHidden_dv');
 
-                elements.find('a').removeAttr('href').addClass('ktlLinkDisabled');
-                elements.find('.redactor-editor').attr('contenteditable', 'false');
-                elements.find('input').attr('disabled', true);
-                elements.addClass('ktlLinkDisabled'); //To prevent clicking on dropdowns.
-                elements.find('.chzn-single').css('background-color', 'rgba(0, 0, 0, 0.1)'); //Special case for single selection dropdowns.
-                elements.find('select').attr('disabled', true);
-                elements.find('textarea').attr('disabled', true);
-                elements.find('.rateit').rateit('readonly', true);
-                elements.filter('.kn-input-signature').css('pointer-events', 'none');
+                        const disable = () => {
+                            applyDisable(viewId, viewType, columns);
+                            viewEl.removeClass('ktlHidden_dv');
+                        };
+                        const enable = () => {
+                            applyEnable(viewId, viewType, columns);
+                            viewEl.removeClass('ktlHidden_dv');
+                        };
 
-                if (viewType === 'form') {
-                    $(document).one('KTL.persistentForm.completed.scene', () => {
-                        // Persistent Form is adding and removing the attribute during its process
-                        $(`#${viewId} .kn-button`).attr('disabled', true);
-                        ktl.scenes.spinnerWatchdog(false); //Don't let the disabled Submit cause a page reload.
-                    });
-                }
+                        const conditions = keyword.options.ktlCond.replace(']', '').split(',').map(e => e.trim());
+                        const viewParam = conditions[3] || '';
+                        const viewParamId = ktl.scenes.findViewWithTitle(viewParam);
+                        const condViewType = ktl.views.getViewType(viewParamId);
+
+                        if (condViewType === 'form') {
+                            $(document).one('KTL.persistentForm.completed.scene', () => {
+                                ktl.views.hideUnhideValidateKtlCond(keyword.options, disable, enable, undefined, viewId);
+                            });
+                        } else {
+                            ktl.views.hideUnhideValidateKtlCond(keyword.options, disable, enable, undefined, viewId);
+                        }
+                    } else {
+                        applyDisable(viewId, viewType, columns);
+                    }
+                });
             }
 
-            $(`#${viewId} .kn-button`).attr('disabled', true);
-            ktl.scenes.spinnerWatchdog(false); //Don't let the disabled Submit cause a page reload.
+            function applyDisable(viewId, viewType, columns) {
+                if (viewType === 'table' || viewType === 'search') {
+                    columns.forEach(column => {
+                        const selector = `#${viewId} tbody td`;
+
+                        if (column.type === 'field') {
+                            $(`${selector}.${column.field.key}`).addClass('ktlNoInlineEdit');
+                        } else {
+                            $(selector).find('a').each(function () {
+                                $(this).data('ktl-dv-href', $(this).attr('href'));
+                            }).removeAttr('href').addClass('ktlLinkDisabled');
+                        }
+                    });
+
+                    $(document).on('KTL.BulkOperations.Updated', () => {
+                        $(`#${viewId} .bulkEditCb`).attr('disabled', 'disabled');
+                    });
+                } else {
+                    let elementSelector;
+                    if (viewType === 'details' || viewType === 'list') {
+                        elementSelector = `#${viewId} .kn-detail-body`;
+                    } else if (viewType === 'form') {
+                        elementSelector = `#${viewId} .kn-input`;
+                    } else if (viewType === 'menu') {
+                        elementSelector = `#${viewId} li`;
+                    }
+
+                    const elements = $(elementSelector);
+
+                    elements.find('a').each(function () {
+                        $(this).data('ktl-dv-href', $(this).attr('href'));
+                    }).removeAttr('href').addClass('ktlLinkDisabled');
+                    elements.find('.redactor-editor').attr('contenteditable', 'false');
+                    elements.find('input').attr('disabled', true);
+                    elements.addClass('ktlLinkDisabled'); //To prevent clicking on dropdowns.
+                    elements.find('.chzn-single').css('background-color', 'rgba(0, 0, 0, 0.1)'); //Special case for single selection dropdowns.
+                    elements.find('select').attr('disabled', true);
+                    elements.find('textarea').attr('disabled', true);
+                    elements.find('.rateit').rateit('readonly', true);
+                    elements.filter('.kn-input-signature').css('pointer-events', 'none');
+
+                }
+
+                $(`#${viewId} .kn-submit`).hide();
+                ktl.scenes.spinnerWatchdog(false);
+            }
+
+            function applyEnable(viewId, viewType, columns) {
+                if (viewType === 'table' || viewType === 'search') {
+                    columns.forEach(column => {
+                        const selector = `#${viewId} tbody td`;
+
+                        if (column.type === 'field') {
+                            $(`${selector}.${column.field.key}`).removeClass('ktlNoInlineEdit');
+                        } else {
+                            $(selector).find('a.ktlLinkDisabled').each(function () {
+                                const savedHref = $(this).data('ktl-dv-href');
+                                if (savedHref) $(this).attr('href', savedHref);
+                            }).removeClass('ktlLinkDisabled');
+                        }
+                    });
+
+                    $(`#${viewId} .bulkEditCb`).removeAttr('disabled');
+                } else {
+                    let elementSelector;
+                    if (viewType === 'details' || viewType === 'list') {
+                        elementSelector = `#${viewId} .kn-detail-body`;
+                    } else if (viewType === 'form') {
+                        elementSelector = `#${viewId} .kn-input`;
+                    } else if (viewType === 'menu') {
+                        elementSelector = `#${viewId} li`;
+                    }
+
+                    const elements = $(elementSelector);
+
+                    elements.find('a.ktlLinkDisabled').each(function () {
+                        const savedHref = $(this).data('ktl-dv-href');
+                        if (savedHref) $(this).attr('href', savedHref);
+                    }).removeClass('ktlLinkDisabled');
+                    elements.find('.redactor-editor').attr('contenteditable', 'true');
+                    elements.find('input').removeAttr('disabled');
+                    elements.removeClass('ktlLinkDisabled');
+                    elements.find('.chzn-single').css('background-color', '');
+                    elements.find('select').removeAttr('disabled');
+                    elements.find('textarea').removeAttr('disabled');
+                    elements.find('.rateit').rateit('readonly', false);
+                    elements.filter('.kn-input-signature').css('pointer-events', '');
+                }
+
+                $(`#${viewId} .kn-submit`).show();
+            }
         }
 
         function removeOptions(view, keywords) {
@@ -13398,18 +14402,40 @@ function Ktl($, appInfo) {
             let bgColorTrue = quickToggleParams.bgColorTrue;
             let bgColorFalse = quickToggleParams.bgColorFalse;
 
+            function extractQtParams(params) {
+                let confirmMsg = null;
+                let mode = null;
+                if (!params) return { confirmMsg, mode };
+                for (const group of params) {
+                    const id = group[0].toLowerCase();
+                    if (id === 'confirm')
+                        confirmMsg = group.length >= 2 ? group.slice(1).join(', ').trim() : 'Are you sure?';
+                    else if (id === 'mode' && group.length >= 2)
+                        mode = group[1].toLowerCase().trim();
+                }
+                return { confirmMsg, mode };
+            }
+
             let viewHasQt = false;
+            let viewConfirmMsg = null;
+            let viewMode = null;
+
             // Override with view-specific colors, if any.
             if (kwInstance) {
                 viewHasQt = true; // If view has QT, then all fields inherit also.
 
                 if (kwInstance.params && kwInstance.params.length) {
-                    const fldColors = kwInstance.params[0];
-                    if (fldColors.length >= 1 && fldColors[0])
-                        bgColorTrue = fldColors[0];
-
-                    if (fldColors.length >= 2 && fldColors[1])
-                        bgColorFalse = fldColors[1];
+                    const firstId = kwInstance.params[0][0]?.toLowerCase();
+                    if (firstId !== 'confirm' && firstId !== 'mode') {
+                        const fldColors = kwInstance.params[0];
+                        if (fldColors.length >= 1 && fldColors[0])
+                            bgColorTrue = fldColors[0];
+                        if (fldColors.length >= 2 && fldColors[1])
+                            bgColorFalse = fldColors[1];
+                    }
+                    const viewExtra = extractQtParams(kwInstance.params);
+                    viewConfirmMsg = viewExtra.confirmMsg;
+                    viewMode = viewExtra.mode;
                 }
             }
 
@@ -13435,16 +14461,30 @@ function Ktl($, appInfo) {
                             if (viewHasQt || fieldKeyword) {
                                 fieldHasQt = true;
                                 if (fieldKeyword && fieldKeyword.length && fieldKeyword[0].params && fieldKeyword[0].params.length > 0) {
-                                    const fldColors = fieldKeyword[0].params[0];
-                                    if (fldColors.length >= 1 && fldColors[0] !== '')
-                                        tmpFieldColors.bgColorTrue = fldColors[0];
-                                    if (fldColors.length >= 2 && fldColors[1] !== '')
-                                        tmpFieldColors.bgColorFalse = fldColors[1];
+                                    const firstId = fieldKeyword[0].params[0][0]?.toLowerCase();
+                                    if (firstId !== 'confirm' && firstId !== 'mode') {
+                                        const fldColors = fieldKeyword[0].params[0];
+                                        if (fldColors.length >= 1 && fldColors[0] !== '')
+                                            tmpFieldColors.bgColorTrue = fldColors[0];
+                                        if (fldColors.length >= 2 && fldColors[1] !== '')
+                                            tmpFieldColors.bgColorFalse = fldColors[1];
+                                    }
                                 }
                             }
 
                             if (fieldHasQt) {
-                                fieldsColor[fieldId] = tmpFieldColors;
+                                let fieldConfirmMsg = null;
+                                let fieldMode = null;
+                                if (fieldKeyword && fieldKeyword.length && fieldKeyword[0].params) {
+                                    const fieldExtra = extractQtParams(fieldKeyword[0].params);
+                                    fieldConfirmMsg = fieldExtra.confirmMsg;
+                                    fieldMode = fieldExtra.mode;
+                                }
+                                fieldsColor[fieldId] = {
+                                    ...tmpFieldColors,
+                                    confirmMsg: fieldConfirmMsg ?? viewConfirmMsg,
+                                    mode: fieldMode ?? viewMode
+                                };
                                 if (inlineEditing && !col.ignore_edit)
                                     $(`#${viewId} td.${fieldId}.cell-edit`).addClass('qtCellClickable');
                             }
@@ -13462,12 +14502,22 @@ function Ktl($, appInfo) {
                         const currentStyle = cell.attr('style');
                         const style = `background-color:${row[fieldId + '_raw'] === true ? fieldsColor[fieldId].bgColorTrue : fieldsColor[fieldId].bgColorFalse}`;
                         cell.attr('style', `${currentStyle ? currentStyle + '; ' : ''}${style}`);
+
+                        const fc = fieldsColor[fieldId];
+                        if (fc.mode) {
+                            const currentValue = row[fieldId + '_raw'] === true;
+                            const isAtTarget = (fc.mode === 'f2t' && currentValue) || (fc.mode === 't2f' && !currentValue);
+                            if (isAtTarget) {
+                                cell.removeClass('qtCellClickable');
+                                cell.css({ cursor: 'default', opacity: '0.6', pointerEvents: 'none' });
+                            }
+                        }
                     });
                 });
             }
 
             //Process cell clicks.
-            $(`#${viewId} .qtCellClickable`).bindFirst('click', e => {
+            $(`#${viewId} .qtCellClickable`).bindFirst('click', async e => {
                 if ($('.bulkEditCb:checked').length) return;
 
                 e.stopImmediatePropagation();
@@ -13476,14 +14526,25 @@ function Ktl($, appInfo) {
                 const viewElement = $(e.target).closest('.kn-search.kn-view[id], .kn-table.kn-view[id]');
                 if (viewElement.length) {
                     const viewId = viewElement.attr('id');
-
-                    const dt = Date.now();
                     const recId = $(e.target).closest('tr').attr('id');
                     let value = ktl.views.getDataFromRecId(viewId, recId)[`${fieldId}_raw`];
-                    value = (value === true ? false : true);
+                    const fc = fieldsColor[fieldId];
+
+                    if (fc && fc.mode) {
+                        if ((fc.mode === 'f2t' && value === true) || (fc.mode === 't2f' && value === false))
+                            return;
+                    }
+
+                    if (fc && fc.confirmMsg) {
+                        const result = await ktl.core.selectOption(fc.confirmMsg, 'Yes,No');
+                        if (result !== 0) return;
+                    }
+
+                    value = !value;
                     if (!viewsToRefresh.includes(viewId))
                         viewsToRefresh.push(viewId);
 
+                    const dt = Date.now();
                     quickToggleObj[dt] = { viewId, fieldId, value, recId, processed: false };
                     const cell = $(e.target).closest('td');
                     cell.css('background-color', quickToggleParams.bgColorPending); //Visual cue that the process is started.
@@ -13527,6 +14588,14 @@ function Ktl($, appInfo) {
                         if (quickToggleParams.showNotification) {
                             showProgress();
                         }
+
+                        $(document).trigger('KTL.quickToggle', [{
+                            viewId: recObj.viewId,
+                            fieldId: recObj.fieldId,
+                            recId: recObj.recId,
+                            value: recObj.value
+                        }]);
+
                         numToProcess--;
                         delete quickToggleObj[dt];
                         if ($.isEmptyObject(quickToggleObj)) {
@@ -13548,7 +14617,7 @@ function Ktl($, appInfo) {
                     })
                     .catch(reason => {
                         ktl.views.autoRefresh();
-                        alert(`Error code KEC_1025 while processing Quick Toggle operation, reason: ${JSON.stringify(reason)}`);
+                        ktl.core.selectOption(`Error code KEC_1025 while processing Quick Toggle operation, reason: ${JSON.stringify(reason)}`, 'Ok');
                     })
             }
 
@@ -14196,7 +15265,7 @@ function Ktl($, appInfo) {
 
                 if (typeof ktl?.log?.addLog === 'function') {
                     const recordList = failedRecordIds.join(', ');
-                    const errorMsg = `KEC_1027 - API tags ${mode} failed for view ${viewId}. Failed records (${failedRecordIds.length}/${ids.length}): ${recordList}`;
+                    const errorMsg = `KEC_1031 - API tags ${mode} failed for view ${viewId}. Failed records (${failedRecordIds.length}/${ids.length}): ${recordList}`;
                     ktl.log.addLog(ktl.const.LS_APP_ERROR, errorMsg);
                 }
 
@@ -14259,7 +15328,7 @@ function Ktl($, appInfo) {
 
                 const updatePromises = recordsToUpdate.map(async ({ recId, apiData }) => {
                     try {
-                        await ktl.api.updateRecord(viewId, recId, apiData, []);
+                        await ktl.api.updateRecord(viewId, recId, apiData);
                         updatedCount++;
                         ktl.core.setInfoPopupText(`Updated ${updatedCount} of ${recordsToUpdate.length} records...`);
                         return { recId, success: true };
@@ -14292,7 +15361,7 @@ function Ktl($, appInfo) {
             // Log failed records if any (only after all retries exhausted)
             if (failedRecordIds.length > 0 && typeof ktl?.log?.addLog === 'function') {
                 const recordList = failedRecordIds.join(', ');
-                const errorMsg = `KEC_1027 - API tags ${mode} failed for view ${viewId}. Failed records (${failedRecordIds.length}/${recordIds.length}): ${recordList}`;
+                const errorMsg = `KEC_1031 - API tags ${mode} failed for view ${viewId}. Failed records (${failedRecordIds.length}/${recordIds.length}): ${recordList}`;
                 ktl.log.addLog(ktl.const.LS_APP_ERROR, errorMsg);
             }
 
@@ -14527,6 +15596,7 @@ function Ktl($, appInfo) {
                     //Add a start button
                     buttonLabel = params[2];
                     let ktlAddonsDiv = ktl.views.getKtlAddOnsDiv(viewId);
+                    if (!ktlAddonsDiv) return;
                     const buttonId = ktl.core.getCleanId(buttonLabel);
                     startButton = ktl.fields.addButton(ktlAddonsDiv, buttonLabel, '', ['kn-button', 'ktlButtonMargin'], `ktlAutoClick_${viewId}-${buttonId}`);
 
@@ -14776,6 +15846,135 @@ function Ktl($, appInfo) {
             })
         }
 
+        let cgSaveTimeout = null;
+
+        function collapsibleGroups(viewId, keywords) {
+            const kw = '_cg';
+            const viewType = ktl.views.getViewType(viewId);
+            if (viewType !== 'table' && viewType !== 'search') return;
+
+            const viewElement = document.getElementById(viewId);
+            if (!viewElement) return;
+
+            const groupRows = viewElement.querySelectorAll('tbody tr.kn-table-group');
+            if (!groupRows.length) return;
+
+            const headerCells = viewElement.querySelectorAll('thead th');
+            headerCells.forEach(th => {
+                if (!th.style.width)
+                    th.style.width = th.getBoundingClientRect().width + 'px';
+            });
+
+            let kwCollapsed = false;
+            if (keywords && keywords[kw]) {
+                if (keywords[kw].length && keywords[kw][0].options) {
+                    const options = keywords[kw][0].options;
+                    if (!ktl.core.hasRoleAccess(options)) return;
+                }
+                kwCollapsed = keywords[kw].some(k => k.params?.[0]?.includes('collapsed'));
+            } else if (ktlKeywords._cgAll) {
+                kwCollapsed = !!ktlKeywords._cgAll.collapsed;
+            }
+
+            const userPrefsObj = ktl.userPrefs.getUserPrefs();
+            const savedCg = userPrefsObj.collapsibleGroups || {};
+            const savedView = savedCg[viewId];
+
+            groupRows.forEach(groupRow => {
+                if (groupRow.querySelector('.ktlCgToggle')) return;
+
+                const td = groupRow.querySelector('td');
+                if (!td) return;
+
+                const groupLabel = getGroupLabel(groupRow);
+                const isCollapsed = savedView ? !!savedView[groupLabel] : kwCollapsed;
+
+                const toggle = document.createElement('span');
+                toggle.className = 'ktlCgToggle';
+                toggle.textContent = isCollapsed ? '+' : '\u2212';
+                toggle.title = (isCollapsed ? 'Expand group' : 'Collapse group') + ' (Ctrl+Click for all)';
+                td.insertBefore(toggle, td.firstChild);
+
+                toggle.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    const expanding = toggle.textContent === '+';
+                    if (e.ctrlKey || e.metaKey) {
+                        //Ctrl/Cmd+Click: apply the same action to every group in this view.
+                        groupRows.forEach(gr => toggleGroup(gr, expanding));
+                    } else {
+                        toggleGroup(groupRow, expanding);
+                    }
+                    saveCgState(viewId);
+                });
+
+                if (isCollapsed)
+                    toggleGroup(groupRow, false);
+            });
+
+            function toggleGroup(groupRow, expand) {
+                const toggle = groupRow.querySelector('.ktlCgToggle');
+                let sibling = groupRow.nextElementSibling;
+
+                while (sibling && !sibling.classList.contains('kn-table-group')) {
+                    sibling.style.display = expand ? '' : 'none';
+                    sibling = sibling.nextElementSibling;
+                }
+
+                toggle.textContent = expand ? '\u2212' : '+';
+                toggle.title = (expand ? 'Collapse group' : 'Expand group') + ' (Ctrl+Click for all)';
+                groupRow.classList.toggle('ktlCgCollapsed', !expand);
+            }
+        }
+
+        function getGroupLabel(groupRow) {
+            const td = groupRow.querySelector('td');
+            if (!td) return '';
+            const clone = td.cloneNode(true);
+            const toggle = clone.querySelector('.ktlCgToggle');
+            if (toggle) toggle.remove();
+            return clone.textContent.trim();
+        }
+
+        function saveCgState(viewId) {
+            const viewElement = document.getElementById(viewId);
+            if (!viewElement) return;
+
+            const groupRows = viewElement.querySelectorAll('tbody tr.kn-table-group');
+            const viewState = {};
+            groupRows.forEach(groupRow => {
+                const label = getGroupLabel(groupRow);
+                if (groupRow.classList.contains('ktlCgCollapsed'))
+                    viewState[label] = true;
+            });
+
+            const userPrefsObj = ktl.userPrefs.getUserPrefs();
+            if (!userPrefsObj.collapsibleGroups)
+                userPrefsObj.collapsibleGroups = {};
+
+            if (Object.keys(viewState).length)
+                userPrefsObj.collapsibleGroups[viewId] = viewState;
+            else
+                delete userPrefsObj.collapsibleGroups[viewId];
+
+            if (!Object.keys(userPrefsObj.collapsibleGroups).length)
+                delete userPrefsObj.collapsibleGroups;
+
+            userPrefsObj.dt = ktl.core.getCurrentDateTime(true, true, false, true);
+            ktl.storage.lsSetItem(ktl.const.LS_USER_PREFS, JSON.stringify(userPrefsObj));
+
+            clearTimeout(cgSaveTimeout);
+            cgSaveTimeout = setTimeout(() => {
+                const myUserPrefsViewId = ktl.userPrefs.getCfg().myUserPrefsViewId;
+                const acctPrefsFld = ktl.userPrefs.getCfg().acctUserPrefsFld;
+                const userAttrs = Knack.getUserAttributes();
+                if (myUserPrefsViewId && acctPrefsFld && userAttrs?.id) {
+                    const apiData = { [acctPrefsFld]: JSON.stringify(userPrefsObj) };
+                    ktl.core.knAPI(myUserPrefsViewId, userAttrs.id, apiData, 'PUT', [], false);
+                }
+                ktl.wndMsg.send('userPrefsChangedMsg', 'req', ktl.const.MSG_APP, IFRAME_WND_ID, 0, JSON.stringify(userPrefsObj));
+            }, 1000);
+        }
+
         const dragAndDropSubscribers = [];
         function dragAndDrop(viewId, keywords) {
             const kw = '_dnd';
@@ -14936,6 +16135,7 @@ function Ktl($, appInfo) {
                     if (applyButton) return;
 
                     let ktlAddonsDiv = ktl.views.getKtlAddOnsDiv(viewId);
+                    if (!ktlAddonsDiv) return;
                     let buttonId = ktl.core.getCleanId(applyButtonLabel);
                     applyButton = ktl.fields.addButton(ktlAddonsDiv, applyButtonLabel, '', ['kn-button', 'ktlButtonMargin'], `${buttonId}-${viewId}`);
 
@@ -14952,6 +16152,14 @@ function Ktl($, appInfo) {
                     ktl.scenes.spinnerWatchdog(false);
                     $.blockUI({ message: '', overlayCSS: { backgroundColor: '#ddd', opacity: 0.2, } })
 
+                    function finishReorder() {
+                        ktl.core.removeTimedPopup();
+                        Knack.hideSpinner();
+                        ktl.scenes.spinnerWatchdog();
+                        ktl.views.autoRefresh();
+                        $.unblockUI();
+                    }
+
                     var recIdArray = [];
                     var idx;
                     let newData;
@@ -14961,10 +16169,19 @@ function Ktl($, appInfo) {
                     else
                         newData = document.querySelectorAll(`#${viewId} tbody tr .${sortFieldId}`);
 
-                    for (idx = 0; idx < newData.length; idx++) {
-                        const sortValue = Number(newData[idx].innerText);
+                    //Rows with a blank/space sort value (e.g. a freshly added record) are pushed to the
+                    //end so they get the highest index, instead of wherever Knack rendered them. Sort is
+                    //stable, so all other rows keep their relative order.
+                    const orderedData = Array.from(newData).sort((a, b) => {
+                        const aBlank = a.innerText.trim() === '';
+                        const bBlank = b.innerText.trim() === '';
+                        return aBlank === bBlank ? 0 : (aBlank ? 1 : -1);
+                    });
+
+                    for (idx = 0; idx < orderedData.length; idx++) {
+                        const sortValue = Number(orderedData[idx].innerText);
                         if (sortValue !== (idx + 1)) {
-                            const recId = newData[idx].closest('tr').id;
+                            const recId = orderedData[idx].closest('tr').id;
                             if (sortValue <= maxIndexRenumber || recId === draggedRecId) {
                                 var recData = {};
                                 recData[sortFieldId] = idx + 1;
@@ -14975,6 +16192,12 @@ function Ktl($, appInfo) {
                     }
 
                     var arrayLen = recIdArray.length;
+                    if (!arrayLen) {
+                        ktl.core.removeInfoPopup();
+                        finishReorder();
+                        return;
+                    }
+
                     idx = 0;
                     var countDone = 0;
                     var apiData = {};
@@ -14999,11 +16222,7 @@ function Ktl($, appInfo) {
                                     ktl.core.removeInfoPopup();
 
                                     ktl.views.refreshView(viewId).then(function () {
-                                        ktl.core.removeTimedPopup();
-                                        ktl.scenes.spinnerWatchdog();
-                                        ktl.views.autoRefresh();
-                                        Knack.hideSpinner();
-                                        $.unblockUI();
+                                        finishReorder();
                                         ktl.core.timedPopup('Rows Reordered successfully', 'success', 1000);
                                     })
                                 } else
@@ -15011,11 +16230,7 @@ function Ktl($, appInfo) {
                             })
                             .catch(function (reason) {
                                 ktl.core.removeInfoPopup();
-                                ktl.core.removeTimedPopup();
-                                Knack.hideSpinner();
-                                ktl.scenes.spinnerWatchdog();
-                                ktl.views.autoRefresh();
-                                $.unblockUI();
+                                finishReorder();
                                 alert('Rows Reorder failed: ' + JSON.parse(reason.responseText).errors[0].message);
                             })
 
@@ -15094,6 +16309,7 @@ function Ktl($, appInfo) {
                         hasButton = true;
                         const buttonLabel = params[0][2];
                         let ktlAddonsDiv = ktl.views.getKtlAddOnsDiv(dstViewId);
+                        if (!ktlAddonsDiv) return;
                         const startButton = ktl.fields.addButton(ktlAddonsDiv, buttonLabel, '', ['kn-button', 'ktlButtonMargin'], `cpyfrom-${dstViewId}-${buttonLabel}`);
                         const capturedForceRefresh = forceRefresh;
                         const capturedMode = mode;
@@ -15806,6 +17022,7 @@ function Ktl($, appInfo) {
             const dateTimeFormat = Knack.fields[fieldId].attributes.format.date_format;
 
             let ktlAddonsDiv = ktl.views.getKtlAddOnsDiv(viewId);
+            if (!ktlAddonsDiv) return;
             ktlAddonsDiv.classList.add('ktlDateTimePickerDiv');
 
             let viewDates = loadViewDates(viewId);
@@ -16398,7 +17615,7 @@ function Ktl($, appInfo) {
         }
 
         //Record History Feature - BEGIN
-        const viewRecordHistoryViewId = ktl.core.getViewIdByTitle('View Record History');
+        const viewRecordHistoryViewId = ktl.core.getViewIdByTitle('View Record History', '', true);
         const recordHistoryObject = ktl.core.getObjectIdByName('Record History');
         const recordHistoryFieldIds = {
             status: ktl.core.getFieldIdByName('Status', recordHistoryObject),
@@ -17030,8 +18247,9 @@ function Ktl($, appInfo) {
                         .then(() => {
                             const signatureElem = $(signatureSelector);
                             signatureElem.addClass(emptyClass);
-                            // Bind a global mouseup event to revalidate the signature field when the user interacts with it
-                            $(signatureElem).closest('.kn-input').off('mouseup.ktl_signature').on('mouseup.ktl_signature', () => {
+                            // Bind mouseup/touchend to revalidate the signature field when the user finishes a stroke
+                            // (touchend is required on touchscreens — jSignature's preventDefault can suppress the synthesized mouseup)
+                            $(signatureElem).closest('.kn-input').off('mouseup.ktl_signature touchend.ktl_signature').on('mouseup.ktl_signature touchend.ktl_signature', () => {
                                 setTimeout(() => {
                                     const lastStrokeButton = viewContainer.find(`[data-input-id='${fieldId}'] input[value="Undo last stroke"]`);
                                     if (lastStrokeButton.length && lastStrokeButton.is(':visible')) {
@@ -17373,6 +18591,13 @@ function Ktl($, appInfo) {
 
         const viewStates = {};
 
+        /**
+         * Adds hide/show controls to a view and restores dependent view features when it opens.
+         *
+         * @param {object} view Knack view being rendered.
+         * @param {object} keywords Parsed keywords for the view.
+         * @returns {void}
+         */
         function hideShowView({ key: viewId }, keywords) {
             const kw = '_hsv';
             if (!viewId || !keywords || !keywords[kw]) return;
@@ -17449,15 +18674,32 @@ function Ktl($, appInfo) {
                     form: 'form, .kn-form-confirmation',
                     list: '.kn-list-content, .kn-records-nav',
                     search: `form, .kn-table.${viewId}, .kn-list.${viewId}`,
-                    calendar: 'div.knack-calendar',
                     menu: 'div.menu-links',
                 };
 
                 const wrapperSelector = wrappers[viewType];
                 const sectionElement = viewElement.find('section').first();
                 const sectionClass = `${hideShowId} ktlHideShowSection ktlBoxWithBorder`;
+                let hideShowSection;
 
-                if (wrapperSelector) {
+                if (viewType === 'calendar') {
+                    hideShowSection = viewElement.find(`section.${sectionClass.replace(/\s/g, '.')}`);
+
+                    if (!hideShowSection.length) {
+                        hideShowSection = $(`<section class='${sectionClass}' />`);
+                        const viewHeader = viewElement.find('.view-header').first();
+
+                        if (viewHeader.length) {
+                            hideShowSection.insertAfter(viewHeader);
+                        } else {
+                            viewElement.append(hideShowSection);
+                        }
+
+                        viewElement.find('.kn-subtitle, .kn-records-nav, div.knack-calendar').each((index, element) => {
+                            hideShowSection.append(element);
+                        });
+                    }
+                } else if (wrapperSelector) {
                     const wrapperElement = viewElement.find(wrapperSelector);
                     if (!wrapperElement.parent().is('section')) {
                         wrapperElement.wrapAll(`<section class='${sectionClass}' />`);
@@ -17466,7 +18708,10 @@ function Ktl($, appInfo) {
                     sectionElement.addClass(sectionClass);
                 }
 
-                const hideShowSection = viewElement.find(`section.${sectionClass.replace(/\s/g, '.')}`);
+                if (!hideShowSection || !hideShowSection.length) {
+                    hideShowSection = viewElement.find(`section.${sectionClass.replace(/\s/g, '.')}`);
+                }
+
                 if (!viewStates[viewId]) {
                     hideShowSection.hide();
                 }
@@ -17483,9 +18728,14 @@ function Ktl($, appInfo) {
                     }
                 } else {
                     hiddenSection.slideDown(delay, () => {
-                        const viewHasSTH = ktl.core.checkIfViewHasKeyword(viewId, '_sth');
-                        if (viewHasSTH) {
-                            ktl.views.stickTableHeader(viewId);
+                        if (keywords._sth) {
+                            const stickyHeaderParams = keywords._sth?.[0]?.params?.[0] || [];
+                            const numOfRecords = stickyHeaderParams[0] || 10;
+                            const viewHeight = stickyHeaderParams[1] || 800;
+                            const rowCount = Knack.views[viewId]?.model?.data?.length || 0;
+
+                            if (rowCount >= numOfRecords)
+                                ktl.views.stickTableHeader(viewId, viewHeight);
                         }
 
                         const signatureElements = viewElement.find('.kn-input-signature');
@@ -17805,52 +19055,37 @@ function Ktl($, appInfo) {
                                             })
                                             .catch(() => { })
                                     } else {
-                                        selector = `#${viewId}_${fieldId}_chzn.chzn-container-single`;
-                                        if ($(`${selector}`).length) {
-                                            ktl.views.searchDropdown(text, fieldId, 'exact', false, viewId)
-                                                .then(function () {
-                                                    //console.log('found!');
-                                                })
-                                                .catch(function (foundText) {
-                                                    console.log('error', foundText);
-                                                })
-                                        } else {
-                                            selector = `#${viewId}_${fieldId}_chzn.chzn-container-multi`;
-                                            if ($(`${selector}`).length) {
-                                                const values = group.slice(1);
+                                        const chznSingle = $(`#${viewId}_${fieldId}_chzn.chzn-container-single`);
+                                        const chznMulti = $(`#${viewId}_${fieldId}_chzn.chzn-container-multi`);
 
-                                                const options = values.map(record => {
-                                                    const [label, id] = record.split(':');
-                                                    return { label, id };
-                                                }).filter(v => (!!v.id && ktl.core.hasRecordIdFormat(v.id)));
+                                        if (chznSingle.length || chznMulti.length) {
+                                            const values = group.slice(1);
+                                            const hasRecordIds = values.some(v => {
+                                                const [, id] = (v || '').split(':');
+                                                return id && ktl.core.hasRecordIdFormat(id);
+                                            });
 
-                                                if (options.length) {
-                                                    //Direct, quick populating of dropdown, with labels and record IDs.
-                                                    const input = $(`#${viewId}-${fieldId}`);
-
-                                                    options.forEach(option => {
-                                                        if (!input.find(`option[value="${option.id}"]`).length) {
-                                                            input.append(`<option value="${option.id}">${option.label}</option>`);
-                                                        }
-                                                    });
-
-                                                    const values2 = input.val() || [];
-                                                    input.val([...values2, ...options.map(o => o.id)]).trigger("liszt:updated");
-                                                } else {
-                                                    //Slow, sequential searches method.
-                                                    async function searchValuesInDropdown(values, fieldId, viewId) {
-                                                        for (const [index, value] of values.entries()) {
-                                                            try {
-                                                                await ktl.views.searchDropdown(value, fieldId, 'exact', false, viewId);
-                                                                //console.log(`${index + 1} - found!`, value);
-                                                            } catch (error) {
-                                                                console.log(`${index + 1} - error`, error);
-                                                            }
+                                            if (hasRecordIds) {
+                                                //Reuse persistentForm logic: append <option> and set value directly — works for single and multi chosen.
+                                                const fieldValue = values.join(';');
+                                                ktl.persistentForm.applyConnectionFieldValue({ fieldId, fieldValue, viewId });
+                                            } else if (chznSingle.length) {
+                                                //Label-only fallback for single chosen.
+                                                ktl.views.searchDropdown(text, fieldId, 'exact', false, viewId)
+                                                    .catch(function (foundText) {
+                                                        console.log('error', foundText);
+                                                    })
+                                            } else {
+                                                //Label-only fallback for multi chosen: sequential searches.
+                                                (async () => {
+                                                    for (const [index, value] of values.entries()) {
+                                                        try {
+                                                            await ktl.views.searchDropdown(value, fieldId, 'exact', false, viewId);
+                                                        } catch (error) {
+                                                            console.log(`${index + 1} - error`, error);
                                                         }
                                                     }
-
-                                                    searchValuesInDropdown(values, fieldId, viewId);
-                                                }
+                                                })();
                                             }
                                         }
                                     }
@@ -18568,57 +19803,110 @@ function Ktl($, appInfo) {
                     const sel = `#${viewId} tr.kn-table-totals`;
                     try {
                         await ktl.core.waitSelector(sel, SUMMARY_WAIT_TIMEOUT);
-                        if (bulkOpsActive) {
-                            //Insert blankCells at first column for each summary row.
-                            const totalRows = $(sel);
-                            if (!$(`#${viewId} tr.kn-table-totals td`)[0].classList.contains('blankCell')) {
-                                const visibleColumns = ktl.views.getGridColspan(viewId);
-                                const totals = $(`#${viewId} tr.kn-table-totals:first`).children('td:not([class^=ktlDisplayNone_], [class*=" ktlDisplayNone_"])');
-                                if (visibleColumns > totals.length) {
-                                    for (let i = totalRows.length - 1; i >= 0; i--) {
-                                        const row = totalRows[i];
-                                        $(row).prepend('<td class="blankCell" style="background-color: #eee; border-top: 1px solid #dadada;"></td>');
-                                    }
-                                }
-                            }
-                        }
 
-                        //Hide summary columns to match hidden columns.
-                        const hiddenHeaders = $(`#${viewId} thead tr th:is([class^=ktlDisplayNone_], [class*=" ktlDisplayNone_"])`);
-                        if (hiddenHeaders.length) {
-                            const visibleColumns = ktl.views.getGridColspan(viewId);
-                            const visibleTotals = $(`#${viewId} tr.kn-table-totals:first`).children('td:visible');
-                            if (visibleColumns < visibleTotals.length) {
-                                hiddenHeaders.each((ix, el) => {
-                                    const cellIndex = el.cellIndex;
-                                    if (cellIndex >= 0) {
-                                        $view.find(`tr.kn-table-totals td:nth-child(${cellIndex + 1})`).addClass('ktlDisplayNone_hc');
+                        //Rebuild each totals row so cells align with header columns.
+                        const headers = Array.from(document.querySelectorAll(`#${viewId} thead tr th`));
+                        const schemaColumns = viewObj.columns || (viewObj.results && viewObj.results.columns);
+                        if (headers.length && schemaColumns) {
+                            const getFieldClass = el => Array.from(el.classList).find(c => c.startsWith('field_'));
+                            document.querySelectorAll(sel).forEach((totalsRow, rowIdx) => {
+                                const originalCells = Array.from(totalsRow.querySelectorAll('td'))
+                                    .filter(td => !td.classList.contains('blankCell'));
+
+                                // When all schema columns are rendered (no "Hide empty columns" / _cgc),
+                                // originalCells[i] maps to schemaColumns[i] — use direct index lookup.
+                                // When fewer cells exist, they're a sequential subset — use sequential index.
+                                const directLookup = originalCells.length >= schemaColumns.length;
+                                let cellIdx = 0;
+                                let schemaSearch = 0;
+                                totalsRow.innerHTML = '';
+
+                                headers.forEach((th, headerIdx) => {
+                                    let td;
+                                    let isSchemaCol = false;
+                                    let matchedSchemaIdx = -1;
+                                    const thField = getFieldClass(th);
+                                    const thText = th.textContent.trim();
+
+                                    //Match by field class, or by text for kn-table-link action columns.
+                                    //Headers without a field class and without kn-table-link are non-schema
+                                    //(e.g. bulk-ops checkbox, app-inserted synthetic columns) and get filler cells.
+                                    if (thField || th.classList.contains('kn-table-link')) {
+                                        for (let s = schemaSearch; s < schemaColumns.length; s++) {
+                                            const col = schemaColumns[s];
+                                            const schemaField = col.field && col.field.key;
+
+                                            if (thField ? thField === schemaField : thText === (col.header || '').trim()) {
+                                                isSchemaCol = true;
+                                                matchedSchemaIdx = s;
+                                                schemaSearch = s + 1;
+                                                break;
+                                            }
+                                        }
                                     }
+
+                                    if (isSchemaCol) {
+                                        if (directLookup && matchedSchemaIdx < originalCells.length)
+                                            td = originalCells[matchedSchemaIdx];
+                                        else if (!directLookup && cellIdx < originalCells.length)
+                                            td = originalCells[cellIdx++];
+                                    }
+
+                                    if (!td) {
+                                        td = document.createElement('td');
+                                        td.style.backgroundColor = '#eee';
+                                        td.style.borderTop = '1px solid #dadada';
+                                        if (bulkOpsActive && headerIdx === 0)
+                                            td.className = 'blankCell';
+                                    }
+
+                                    // Strip then re-propagate ktlDisplayNone classes from the header.
+                                    // hideColumns uses nth-child which can target the wrong totals cell
+                                    // when synthetic/grouping columns shift column indices.
+                                    Array.from(td.classList)
+                                        .filter(c => c.startsWith('ktlDisplayNone'))
+                                        .forEach(c => td.classList.remove(c));
+                                    Array.from(th.classList)
+                                        .filter(c => c.startsWith('ktlDisplayNone'))
+                                        .forEach(c => td.classList.add(c));
+
+                                    totalsRow.appendChild(td);
                                 });
-                            }
-
-                            //Reposition summay labels that might have been hidden. Use the first blank column.
-                            const summaryLabel = Knack.views[viewId].model.view.totals[0].label;
-                            const summaryCell = $(`#${viewId} tr.kn-table-totals:first td:visible`).filter(function () {
-                                return $(this).text().trim().startsWith(summaryLabel);
                             });
+                        }
 
-                            if (!summaryCell.length) {
-                                const hiddenSummaryCell = $(`#${viewId} tr.kn-table-totals:first td.ktlDisplayNone_hc`).filter(function () {
-                                    return $(this).text().trim().startsWith(summaryLabel);
-                                });
-                                if (hiddenSummaryCell.length) {
-                                    const originalSummaryColumn = hiddenSummaryCell[0].cellIndex;
-                                    const newSummaryColumnIndex = $(`#${viewId} tr.kn-table-totals:first td:not(.blankCell)`).filter(function () {
-                                        return $(this).text().trim().replace(/\u00a0/g, '') === '';
-                                    }).first()[0].cellIndex;
-                                    $(`#${viewId} tr.kn-table-totals`).each((ix, summaryRow) => {
-                                        const cellContent = $(summaryRow).find(`td:nth-child(${originalSummaryColumn + 1})`)[0].innerHTML;
-                                        $(summaryRow).find(`td:nth-child(${newSummaryColumnIndex + 1})`)[0].innerHTML = cellContent;
-                                    });
+                        //Reposition summary label if it ended up in a hidden column.
+                        try {
+                            const totalsModel = Knack.views[viewId].model.view.totals;
+                            if (totalsModel && totalsModel.length) {
+                                const summaryLabel = totalsModel[0].label;
+                                const firstTotalsRow = document.querySelector(sel);
+                                if (firstTotalsRow && summaryLabel) {
+                                    const isHiddenCell = td => Array.from(td.classList).some(c => c.startsWith('ktlDisplayNone'));
+                                    const allCells = Array.from(firstTotalsRow.querySelectorAll('td'));
+                                    const labelVisible = allCells.some(td => !isHiddenCell(td) && td.textContent.trim().startsWith(summaryLabel));
+
+                                    if (!labelVisible) {
+                                        const hiddenLabelCell = allCells.find(td => isHiddenCell(td) && td.textContent.trim().startsWith(summaryLabel));
+                                        if (hiddenLabelCell) {
+                                            const labelIdx = hiddenLabelCell.cellIndex;
+                                            const targetCell = allCells.find(td =>
+                                                !isHiddenCell(td) && !td.classList.contains('blankCell') &&
+                                                td.textContent.trim().replace(/\u00a0/g, '') === ''
+                                            );
+                                            if (targetCell) {
+                                                const targetIdx = targetCell.cellIndex;
+                                                document.querySelectorAll(sel).forEach(row => {
+                                                    const cells = row.querySelectorAll('td');
+                                                    if (cells[targetIdx] && cells[labelIdx])
+                                                        cells[targetIdx].innerHTML = cells[labelIdx].innerHTML;
+                                                });
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                        }
+                        } catch (e) { /* Label repositioning is best-effort. */ }
                     } catch (e) {
                         // Error handled silently
                     }
@@ -18763,6 +20051,7 @@ function Ktl($, appInfo) {
                             }, 200);
                             return;
                         } else {
+                            delete dropdownSearching[fieldId];
                             return reject(`Search timeout after retries: ${fieldId}, ${srchTxt}`);
                         }
                     }
@@ -18789,13 +20078,17 @@ function Ktl($, appInfo) {
 
                     viewSel = viewId ? '#' + viewId + ' ' : viewSel;
                     var dropdownObj = $(viewSel + '[name="' + fieldId + '"].select');
+                    if (!dropdownObj.length)
+                        dropdownObj = $(viewSel + '[name="' + fieldId + '"].chzn-select');
 
                     if (dropdownObj.length) {
+                        var chznId = dropdownObj.attr('id').replace(/-/g, '_') + '_chzn';
+
                         //Multiple choice (hard coded entries) drop downs. Ex: Work Shifts
                         var isMultipleChoice = !!$(`#${viewId} [data-input-id="${fieldId}"].kn-input-multiple_choice`).length;
-                        var isSingleSelection = !!$(`#${viewId}_${fieldId}_chzn.chzn-container-single`).length;
-                        var chznSearchInput = $(`#${viewId}_${fieldId}_chzn.chzn-container input`).first();
-                        var chznContainer = $(`#${viewId}_${fieldId}_chzn.chzn-container`);
+                        var isSingleSelection = !!$(`#${chznId}.chzn-container-single`).length;
+                        var chznSearchInput = $(`#${chznId}.chzn-container input`).first();
+                        var chznContainer = $(`#${chznId}.chzn-container`);
 
                         let currentOptionsMultipleChoices = [];
 
@@ -18803,7 +20096,7 @@ function Ktl($, appInfo) {
                         if ($(viewSel + '[id$="' + fieldId + '_chzn"] .ui-autocomplete-input').length > 0) {
                             //If it's a multiple selection, we must take note of the current options and merge the next one coming, if found.
                             if (!isSingleSelection) {
-                                const currentOptions = $(`#${viewId}-${fieldId} option`);
+                                const currentOptions = dropdownObj.find('option');
                                 currentOptions.each(function () {
                                     if ($(this).text() !== srchTxt) {
                                         currentOptionsMultipleChoices.push(this);
@@ -18954,25 +20247,24 @@ function Ktl($, appInfo) {
                                                 delete dropdownSearching[fieldId];
 
                                                 //Insert back previous selected entries.
-                                                const input = $(`#${viewId}-${fieldId}`);
                                                 for (const opt of currentOptionsMultipleChoices) {
-                                                    input.append(opt);
+                                                    dropdownObj.append(opt);
                                                 }
 
-                                                if ($(`#${viewId}_${fieldId}_chzn .chzn-results li.no-results`).length) {
+                                                if ($(`#${chznId} .chzn-results li.no-results`).length) {
                                                     Knack.hideSpinner();
                                                     ktl.core.timedPopup(srchTxt + ' not Found', 'error', 3000);
                                                 } else {
                                                     foundText = srchTxt;
                                                     if (results.length === 1) {
-                                                        $(`#${viewId}-${fieldId} option:not("selected")`).attr('selected', '');
-                                                        input.trigger("liszt:updated");
+                                                        dropdownObj.find('option:not("selected")').attr('selected', '');
+                                                        dropdownObj.trigger("liszt:updated");
                                                         if (showPopup)
                                                             ktl.core.timedPopup('Found ' + foundText);
                                                     } else {
                                                         if (showPopup)
                                                             ktl.core.timedPopup('Found many, select from list...', 'warning');
-                                                        input.trigger("liszt:updated");
+                                                        dropdownObj.trigger("liszt:updated");
                                                     }
 
                                                     chznContainer.find('.chzn-drop').css('left', ''); //Put back, since was moved to -9000px.
@@ -19566,6 +20858,9 @@ function Ktl($, appInfo) {
             getAllFieldsWithKeywordsInView: function (viewId) {
                 if (!viewId || !Knack.views[viewId] || !Knack.views[viewId].model) return {};
 
+                // Return cached result when available — view field lists and keywords are static after startup.
+                if (_fieldsWithKwCache.has(viewId)) return _fieldsWithKwCache.get(viewId);
+
                 //Scan all fields in view to find any keywords.
                 const view = Knack.views[viewId].model.view;
                 var foundFields = [];
@@ -19636,6 +20931,10 @@ function Ktl($, appInfo) {
                 for (var j = 0; j < foundFields.length; j++)
                     ktl.fields.getFieldKeywords(foundFields[j], fieldsWithKwObj);
 
+                // Don't cache an empty result: field keywords may not be registered yet on early renders.
+                // Caching {} here would mask keywords that arrive later (e.g. _ttip never injected on forms).
+                if (!$.isEmptyObject(fieldsWithKwObj))
+                    _fieldsWithKwCache.set(viewId, fieldsWithKwObj);
                 return fieldsWithKwObj;
             },
 
@@ -19793,6 +21092,14 @@ function Ktl($, appInfo) {
                 if (!viewId || !validationKey || !ktl.core.getCfg().enabled.formPreValidation) return;
 
                 var submit = document.querySelector('#' + viewId + ' .is-primary');
+                if (!submit) {
+                    const connectionSubmitInput =
+                        document.querySelector(`#connection-form-view input[value="${viewId}"]`) ||
+                        document.querySelector(`.kn-submit input[value="${viewId}"]`);
+                    const connectionSubmit = connectionSubmitInput ? connectionSubmitInput.closest('.kn-submit') : null;
+                    submit = connectionSubmit ? connectionSubmit.querySelector('.is-primary') : null;
+                }
+
                 if (!submit) return;
 
                 if (submit.validity) {
@@ -19962,6 +21269,15 @@ function Ktl($, appInfo) {
                 });
             },
 
+            /**
+             * Evaluates ktlCond for hide and unhide keyword flows.
+             * @param {object} options Keyword options.
+             * @param {Function} hide Hide callback.
+             * @param {Function} unhide Unhide callback.
+             * @param {boolean} fixRows Whether table rows are being fixed.
+             * @param {string} keywordViewId View id owning the keyword.
+             * @returns {Promise<void|boolean>} Promise resolving when the condition finishes evaluating.
+             */
             hideUnhideValidateKtlCond: function (options = {}, hide, unhide, fixRows, keywordViewId) {
                 return new Promise(function (resolve) {
                     hide(fixRows);
@@ -19971,18 +21287,33 @@ function Ktl($, appInfo) {
                     const conditions = options.ktlCond.replace(']', '').split(',').map(e => e.trim());
 
                     const operator = conditions[0] || '';
-                    const value = conditions[1] || '';
+                    let value = conditions[1] || '';
                     const field = conditions[2] || '';
                     const view = conditions[3] || '';
+
+                    if (value === 'ktlLoggedInAccount') {
+                        const userAttr = Knack.getUserAttributes();
+                        if (userAttr !== 'No user found')
+                            value = userAttr.name;
+                        else {
+                            unhide();
+                            return resolve();
+                        }
+                    }
 
                     if (view === 'ktlLoggedInAccount') {
                         const userAttr = Knack.getUserAttributes();
                         if (userAttr !== 'No user found' && field.startsWith('field_')) {
-                            const userValue = userAttr['values'][field].full;
-                            return resolve(ktlCompare(userValue, operator, value));
+                            const userValue = ktl.account.getLoggedInAccountFieldValue(userAttr, field);
+                            const conditionMatches = ktlCompare(userValue, operator, value);
+
+                            if (!conditionMatches)
+                                unhide();
+
+                            return resolve();
                         } else {
                             console.error(`ktlCond - ktlLoggedInAccount in ${keywordViewId} requires a fieldId to compare against not a field label ${field}.`);
-                            return resolve(false);
+                            return resolve();
                         }
                     }
 
@@ -20129,6 +21460,13 @@ function Ktl($, appInfo) {
                 });
             },
 
+            /**
+             * Evaluates whether a ktlCond expression matches the current state.
+             * @param {object} options Keyword options.
+             * @param {object} recordObj Record object used by tables and lists.
+             * @param {string} keywordViewId View id owning the keyword.
+             * @returns {Promise<boolean>} Promise resolving to whether the condition matches.
+             */
             validateKtlCond: function (options = {}, recordObj = {} /*Used only with Tables and Lists*/, keywordViewId) {
                 return new Promise(function (resolve) {
                     if (!options.ktlCond) return resolve(true);
@@ -20136,15 +21474,23 @@ function Ktl($, appInfo) {
                     const conditions = options.ktlCond.replace(']', '').split(',').map(e => e.trim());
 
                     const operator = conditions[0] || '';
-                    const value = conditions[1] || '';
+                    let value = conditions[1] || '';
                     const field = conditions[2] || '';
                     let fieldId;
                     const view = conditions[3] || '';
 
+                    if (value === 'ktlLoggedInAccount') {
+                        const userAttr = Knack.getUserAttributes();
+                        if (userAttr !== 'No user found')
+                            value = userAttr.name;
+                        else
+                            return resolve(false);
+                    }
+
                     if (view === 'ktlLoggedInAccount') {
                         const userAttr = Knack.getUserAttributes();
                         if (userAttr !== 'No user found' && field.startsWith('field_')) {
-                            const userValue = userAttr['values'][field].full;
+                            const userValue = ktl.account.getLoggedInAccountFieldValue(userAttr, field);
                             return resolve(ktlCompare(userValue, operator, value));
                         } else {
                             console.error(`ktlCond - ktlLoggedInAccount in ${keywordViewId} requires a fieldId to compare against not a field label ${field}.`);
@@ -22194,7 +23540,7 @@ function Ktl($, appInfo) {
 
                 const ttipText = this.processTextMarkup(tooltipText);
 
-                const posEl = document.querySelector(tooltipIconPosition);
+                const posEl = pos.get(0);
                 if (posEl) posEl.dataset.ktlTtipText = ttipText;
 
                 $(`${tooltipIconPosition} i.${tooltipIcon}`).on('mouseenter.ktlTooltip', function (e) {
@@ -22934,12 +24280,14 @@ function Ktl($, appInfo) {
                             }
 
                             showProgress(0);
-                            ktl.api.updateRecords(bulkOpsViewId, recordIds, apiData, [], {
-                                onProgress: ({ updated }) => showProgress(updated),
-                                continueOnError: false,
-                                staggerMs: 40
-                            })
-                                .then(async (result) => {
+                            (async () => {
+                                try {
+                                    const result = await ktl.api.updateRecords(bulkOpsViewId, recordIds, apiData, {
+                                        onProgress: ({ updated }) => showProgress(updated),
+                                        continueOnError: false,
+                                        staggerMs: 40
+                                    });
+
                                     automatedBulkOpsQueue[bulkOpsViewId] = [];
                                     delete automatedBulkOpsQueue[bulkOpsViewId];
 
@@ -22955,12 +24303,12 @@ function Ktl($, appInfo) {
                                     }
 
                                     resolve(result.updated);
-                                })
-                                .catch(async (error) => {
+                                } catch (error) {
                                     await restoreDefaultPageState();
                                     const errorMessage = error.message || 'processAutomatedBulkOps error';
                                     reject(errorMessage);
-                                });
+                                }
+                            })();
 
                             async function restoreDefaultPageState() {
                                 ktl.core.removeInfoPopup();
@@ -23120,6 +24468,9 @@ function Ktl($, appInfo) {
                     let div = document.querySelector(`#${viewId} .table-keyword-search .control.has-addons`);
                     if (div) {
                         hasSearchElement = true;
+                        //Ensure the search form lays out children inline, so the addons sit on the same line as the search box.
+                        const searchForm = document.querySelector(`#${viewId} .table-keyword-search`);
+                        if (searchForm) searchForm.style.display = 'flex';
                     } else {
                         div = document.querySelector(`#${viewId} .kn-submit.control`);
                         if (div) {
@@ -23146,7 +24497,7 @@ function Ktl($, appInfo) {
 
                     ktlAddonsDiv.classList.add('ktlAddonsDiv');
                     const styles = { 'margin-bottom': '1.1em' };
-                    if (hasSearchElement) styles['margin-left'] = '1.1em';
+                    if (hasSearchElement) styles['margin-left'] = '2.5em';
                     $(ktlAddonsDiv).css(styles);
 
                     if (appendInside) {
@@ -23311,8 +24662,10 @@ function Ktl($, appInfo) {
 
             var lastSavedVersion = ktl.storage.lsGetItem('APP_KTL_VERSIONS');
             if (!lastSavedVersion || lastSavedVersion !== APP_KTL_VERSIONS) {
-                ktl.log.addLog(ktl.const.LS_INFO, 'KEC_1013 - Updated software: ' + APP_KTL_VERSIONS);
-                ktl.storage.lsSetItem('APP_KTL_VERSIONS', APP_KTL_VERSIONS);
+                if (!lastSavedVersion || isNewerVersion(APP_KTL_VERSIONS, lastSavedVersion)) {
+                    ktl.log.addLog(ktl.const.LS_INFO, 'KEC_1013 - Updated software: ' + APP_KTL_VERSIONS);
+                    ktl.storage.lsSetItem('APP_KTL_VERSIONS', APP_KTL_VERSIONS);
+                }
             }
 
             addFooter();
@@ -23507,6 +24860,7 @@ function Ktl($, appInfo) {
             if (!ktl.scenes.isiFrameWnd()) {
                 waitUserId()
                     .then(() => {
+                        ktl.account.getUserRoles(); //Prime the role cache early, as soon as the user is authenticated.
                         ktl.scenes.syncUserPrefs(); // Sync prefs after authentication if not already done
                         generateUserTheme(); // Re-apply theme after authentication if it was skipped earlier (no userId) or default applied.
                         ktl.core.applyKioskMode();
@@ -23541,6 +24895,8 @@ function Ktl($, appInfo) {
                 if (!ktl.account.isDeveloper() && !ktl.core.isKiosk())
                     keywords._km && ktl.core.kioskMode(true);
                 keywords._hv && ktl.views.hideView(viewId, keywords);
+                if (keywords._dv?.some(kw => kw.options?.ktlCond))
+                    $('#' + viewId).addClass('ktlHidden_dv');
                 //keywords._hc && ktl.views.hideColumns(viewObj, keywords, false);
                 //keywords._rc && ktl.views.removeColumns(viewObj, keywords, false);
                 keywords._cls && ktl.views.addRemoveClass(viewId, keywords);
@@ -23642,10 +24998,18 @@ function Ktl($, appInfo) {
                     mobileContainer.append(bookmarkContainer);
                 }
             } else {
-                // For desktop - insert after logout link
+                // For desktop - insert after logout link, or append to header for public pages
                 $('.ktlBookmarkToggle').remove();
                 if ($('.kn-log-out').length > 0) {
                     $('.kn-log-out').after(bookmarkIcon);
+                } else {
+                    const infoBar = document.querySelector('.kn-info-bar');
+                    if (infoBar) {
+                        infoBar.style.display = 'block';
+                        const knInfo = infoBar.querySelector('.kn-info');
+                        bookmarkIcon.css({ 'float': 'right' });
+                        $(knInfo || infoBar).append(bookmarkIcon);
+                    }
                 }
             }
 
@@ -24419,6 +25783,10 @@ function Ktl($, appInfo) {
 
                     existingStyle.textContent = `
                             /* Top-Level Page Elements */
+                            .ktlUserTheme ~ html,
+                            html:has(.ktlUserTheme) {
+                                background-color: var(--ktlTheme_pageBg) !important;
+                            }
                             #knack-body.ktlUserTheme {
                                 background-color: var(--ktlTheme_pageBg) !important;
                                 background-image: none !important;
@@ -24536,6 +25904,8 @@ function Ktl($, appInfo) {
                                 background-color: var(--ktlTheme_tableHeaderBg) !important;
                                 color: var(--ktlTheme_headersAndLabelsText) !important;
                                 border-color: var(--ktlTheme_tableGridColor) !important;
+                            }
+                            .ktlUserTheme .knTable th:not(:first-child) {
                                 border-left-color: transparent !important;
                             }
                             .ktlUserTheme .knTable td:not([style*="background"]):not(.ktlInlineEditableCellsStyle):not(.ktlStickyCell):not(.bulkEditSelectedRow) {
@@ -24546,6 +25916,8 @@ function Ktl($, appInfo) {
                             }
                             .ktlUserTheme .knTable td:not(.bulkEditSelectedCol) {
                                 border-color: var(--ktlTheme_tableGridColor) !important;
+                            }
+                            .ktlUserTheme .knTable td:not(.bulkEditSelectedCol):not(:first-child) {
                                 border-left-color: transparent !important;
                             }
                             .ktlUserTheme .kn-content .fc-widget-header,
@@ -24559,7 +25931,7 @@ function Ktl($, appInfo) {
                                 background-color: var(--ktlTheme_tableSummaryBg) !important;
                                 color: var(--ktlTheme_tableSummaryText) !important;
                             }
-                            .ktlUserTheme td.cell-edit.ktlInlineEditableCellsStyle:not([style*="background"]):not(.bulkEditSelectedRow) {
+                            .ktlUserTheme td.cell-edit.ktlInlineEditableCellsStyle:not([style*="background"]):not(.bulkEditSelectedRow):not(.ktlNoInlineEdit) {
                                 background-color: var(--ktlTheme_inlineEditBg) !important;
                             }
 
@@ -24783,6 +26155,9 @@ function Ktl($, appInfo) {
                             .ktlUserTheme #resultWndTextDivId::-webkit-scrollbar-corner {
                                 background-color: var(--ktlTheme_tableHeaderBg, #404040) !important;
                             }
+                            .ktlUserTheme #ktlSearchStatusBarId {
+                                color: var(--ktlTheme_headersAndLabelsText) !important;
+                            }
 
                             /* Confirm Dialog (selectOption) */
                             .ktlUserTheme .ktlConfirmOverlay {
@@ -24809,6 +26184,74 @@ function Ktl($, appInfo) {
                                 background-color: var(--ktlTheme_inputFieldBg) !important;
                                 color: var(--ktlTheme_inputFieldText) !important;
                                 border-color: var(--ktlTheme_tableHeaderBg) !important;
+                            }
+
+                            /* Highcharts (Report Charts) */
+                            .ktlUserTheme .highcharts-background {
+                                fill: var(--ktlTheme_pageBg) !important;
+                            }
+                            .ktlUserTheme .highcharts-title,
+                            .ktlUserTheme .highcharts-subtitle,
+                            .ktlUserTheme .highcharts-caption {
+                                fill: var(--ktlTheme_headersAndLabelsText) !important;
+                            }
+                            .ktlUserTheme .highcharts-legend-item text,
+                            .ktlUserTheme .highcharts-legend-title {
+                                fill: var(--ktlTheme_lightText) !important;
+                            }
+                            .ktlUserTheme .highcharts-xaxis-labels text,
+                            .ktlUserTheme .highcharts-yaxis-labels text,
+                            .ktlUserTheme .highcharts-axis-title {
+                                fill: var(--ktlTheme_lightText) !important;
+                            }
+                            .ktlUserTheme .highcharts-grid-line {
+                                stroke: var(--ktlTheme_tableGridColor) !important;
+                            }
+                            .ktlUserTheme .highcharts-axis-line,
+                            .ktlUserTheme .highcharts-tick {
+                                stroke: var(--ktlTheme_tableGridColor) !important;
+                            }
+                            .ktlUserTheme .highcharts-data-label text {
+                                fill: var(--ktlTheme_lightText) !important;
+                            }
+                            .ktlUserTheme .highcharts-text-outline {
+                                stroke: var(--ktlTheme_pageBg) !important;
+                            }
+                            .ktlUserTheme .highcharts-pie-series .highcharts-data-label text {
+                                fill: white !important;
+                            }
+                            .ktlUserTheme .highcharts-tooltip text {
+                                fill: var(--ktlTheme_lightText) !important;
+                            }
+                            .ktlUserTheme .highcharts-tooltip > span {
+                                background-color: var(--ktlTheme_tableHeaderBg) !important;
+                                color: var(--ktlTheme_lightText) !important;
+                            }
+                            .ktlUserTheme .highcharts-label-box {
+                                fill: var(--ktlTheme_tableHeaderBg) !important;
+                                stroke: var(--ktlTheme_tableGridColor) !important;
+                            }
+
+                            /* Virtual Keyboard (simple-keyboard) */
+                            .ktlUserTheme .simple-keyboard {
+                                background-color: transparent !important;
+                            }
+                            .ktlUserTheme .simple-keyboard .hg-rows {
+                                background-color: var(--ktlTheme_pageButtonBg) !important;
+                                border-color: var(--ktlTheme_tableGridColor) !important;
+                            }
+                            .ktlUserTheme .simple-keyboard .hg-button {
+                                background-color: var(--ktlTheme_inputFieldBg) !important;
+                                color: var(--ktlTheme_inputFieldText) !important;
+                                border-bottom-color: var(--ktlTheme_tableGridColor) !important;
+                                box-shadow: 0 0 3px -1px rgba(255, 255, 255, 0.15) !important;
+                            }
+                            .ktlUserTheme .simple-keyboard .hg-button:active {
+                                background-color: var(--ktlTheme_tableCellBg) !important;
+                            }
+                            .ktlUserTheme .simple-keyboard .hg-functionBtn {
+                                background-color: var(--ktlTheme_menuButtonBg) !important;
+                                color: var(--ktlTheme_menuButtonText) !important;
                             }
 
                             /* Debug Window */
@@ -25506,14 +26949,14 @@ function Ktl($, appInfo) {
                     slider.min = '-100';
                     slider.max = '100';
                     const defaultBrightness = currentSettings.mode === 'dark' ? -10 : 0;
-                    if (currentSettings.overrides.rowHoverBrightness === undefined) {
-                        currentSettings.overrides.rowHoverBrightness = defaultBrightness;
-                    }
-                    slider.value = currentSettings.overrides.rowHoverBrightness;
+                    const brightnessValue = currentSettings.overrides.rowHoverBrightness !== undefined
+                        ? currentSettings.overrides.rowHoverBrightness
+                        : defaultBrightness;
+                    slider.value = brightnessValue;
                     slider.style.width = '100px';
                     const sliderValue = document.createElement('span');
                     sliderValue.id = 'ktlTheme_rowHoverBrightnessValue';
-                    sliderValue.textContent = currentSettings.overrides.rowHoverBrightness + '%';
+                    sliderValue.textContent = brightnessValue + '%';
                     sliderValue.style.width = '45px';
                     sliderValue.style.textAlign = 'right';
 
@@ -27092,7 +28535,7 @@ function Ktl($, appInfo) {
                                         devToolSearchDiv.style.top = savedPosition.top + 'px';
                                         ktl.core.ktlDevToolsAdjustPositionAndSave(devToolSearchDiv, devToolStorageName, savedPosition);
                                     } else {
-                                        const position = ktl.core.centerElementOnScreen(devToolSearchDiv);
+                                        const position = ktl.core.devToolAutoPosition(devToolSearchDiv);
                                         ktl.core.ktlDevToolsAdjustPositionAndSave(devToolSearchDiv, devToolStorageName, position);
                                     }
 
@@ -27183,6 +28626,12 @@ function Ktl($, appInfo) {
                                     searchInput.setAttribute('id', 'ktlDevToolsSearchInputId');
                                     searchInput.classList.add('ktlDevToolsSearchInput');
                                     devToolSearchDiv.appendChild(searchInput);
+
+                                    var searchStatusBar = document.createElement('div');
+                                    searchStatusBar.setAttribute('id', 'ktlSearchStatusBarId');
+                                    searchStatusBar.classList.add('ktlSearchStatusBar');
+                                    devToolSearchDiv.appendChild(searchStatusBar);
+
                                     searchInput.focus();
                                     searchInput.select();
 
@@ -27372,7 +28821,8 @@ function Ktl($, appInfo) {
 
                                     function performSearch(query) {
                                         if (!query) return;
-                                        searchInput.classList.remove('ktlNotValid');
+                                        searchInput.style.removeProperty('background-color');
+                                        searchStatusBar.textContent = '';
                                         console.log('Searching for:', query);
 
                                         $('.ktlDevToolLink').remove();
@@ -27513,8 +28963,13 @@ function Ktl($, appInfo) {
                                             kwResults = ktl.core.findAllKeywords(query);
                                         } else {
                                             // Use unified universal search for general text
-                                            const searchResult = ktl.core.universalSearch(query, { outputFormat: 'html' });
-                                            kwResults = searchResult.html || NO_RESULTS;
+                                            try {
+                                                var searchResult = ktl.core.universalSearch(query, { outputFormat: 'html' });
+                                                kwResults = searchResult.html || NO_RESULTS;
+                                            } catch (e) {
+                                                console.error('universalSearch error:', e);
+                                                kwResults = NO_RESULTS;
+                                            }
                                         }
 
                                         // Helper to extract paramStr from keyword value
@@ -27626,14 +29081,28 @@ function Ktl($, appInfo) {
                                                 if (appUrl) kwResults += `<a href="${appUrl}" target="_self">${appUrl}</a><br>`;
                                             }
 
-                                            if (kwResults) {
-                                                if (kwResults === NO_RESULTS) {
-                                                    searchInput.classList.add('ktlNotValid');
-                                                    ktl.core.timedPopup(`"${query}" not found`, 'warning', 2000);
+                                            if (kwResults && kwResults !== NO_RESULTS) {
+                                                $(document).trigger('KTL.devPopupSetResultText', kwResults);
+                                                if (searchResult && searchResult.totalMatches !== undefined) {
+                                                    searchStatusBar.textContent = `${searchResult.totalMatches} result${searchResult.totalMatches === 1 ? '' : 's'} found in ${searchResult.searchTime} ms`;
                                                 } else {
-                                                    $(document).trigger('KTL.devPopupSetResultText', kwResults);
+                                                    const countMatch = kwResults.match(/Summary:\s*(\d+)\s*items?\s*found/i)
+                                                        || kwResults.match(/(\d+)\s*result\(s\)\s*found/i);
+                                                    const count = countMatch ? parseInt(countMatch[1]) : 0;
+                                                    searchStatusBar.textContent = countMatch ? `${count} item${count === 1 ? '' : 's'} found` : 'Search completed';
                                                 }
                                             }
+                                        } else {
+                                            searchStatusBar.textContent = `"${query}" Not found`;
+                                            let blinkCount = 0;
+                                            const blinkInterval = setInterval(() => {
+                                                searchInput.style.setProperty('background-color', blinkCount % 2 === 0 ? '#fdb0b0' : '', 'important');
+                                                blinkCount++;
+                                                if (blinkCount >= 6) {
+                                                    clearInterval(blinkInterval);
+                                                    searchInput.style.removeProperty('background-color');
+                                                }
+                                            }, 150);
                                         }
                                     }
                                 })
@@ -27759,23 +29228,23 @@ function Ktl($, appInfo) {
                                 sendKtlUsageBtn.appendChild(helpIcon);
 
                                 ktl.fields.addButton(devBtnsDiv, 'Reset Auto-Login', '', ['devBtn', 'kn-button']).addEventListener('click', () => {
-                                    ktl.core.timedPopup('Erasing Auto-Login data...', 'warning', 1800);
-                                    var loginInfo = ktl.storage.lsGetItem('AES_LI', true, false);
-                                    if (loginInfo) {
-                                        if (loginInfo === 'SkipAutoLogin')
-                                            ktl.storage.lsRemoveItem('AES_LI', true, false, false);
-                                        else
-                                            ktl.storage.lsRemoveItem('AES_LI', true, false, true);
-                                    }
+                                    if (confirm('Are you sure?')) {
+                                        ktl.core.timedPopup('Erasing Auto-Login data...', 'warning', 1800);
+                                        var loginInfo = ktl.storage.lsGetItem('AES_LI', true, false);
+                                        if (loginInfo) {
+                                            if (loginInfo === 'SkipAutoLogin')
+                                                ktl.storage.lsRemoveItem('AES_LI', true, false, false);
+                                            else
+                                                ktl.storage.lsRemoveItem('AES_LI', true, false, true);
+                                        }
 
-                                    ktl.storage.lsRemoveItem('AES_EK', true, false, false);
+                                        ktl.storage.lsRemoveItem('AES_EK', true, false, false);
 
-                                    setTimeout(() => {
-                                        if (confirm('Do you want to logout?')) {
+                                        setTimeout(() => {
                                             ktl.account.logout();
                                             processLogoutBtn();
-                                        }
-                                    }, 500)
+                                        }, 500)
+                                    }
                                 })
 
                                 //Logout button with user name
@@ -27846,7 +29315,7 @@ function Ktl($, appInfo) {
                                     devBtnsDiv.style.top = savedPosition.top + 'px';
                                     ktl.core.ktlDevToolsAdjustPositionAndSave(devBtnsDiv, devToolStorageName, savedPosition);
                                 } else {
-                                    const position = ktl.core.centerElementOnScreen(devBtnsDiv);
+                                    const position = ktl.core.devToolAutoPosition(devBtnsDiv);
                                     ktl.core.ktlDevToolsAdjustPositionAndSave(devBtnsDiv, devToolStorageName, position);
                                 }
 
@@ -27901,6 +29370,14 @@ function Ktl($, appInfo) {
                         indicator.id = indicatorId;
                         indicator.className = 'ktlUtilityBarIndicator ktlFlashingFadeInOut';
                         utilityBar.appendChild(indicator);
+
+                        if (key === 'hiddenElements') {
+                            indicator.addEventListener('click', function () {
+                                hideHiddenElemements();
+                                ktl.storage.lsSetItem('SHOW_HIDDEN_ELEMENTS', false, false, true);
+                                ktl.scenes.updateUtilityBarIndicator('hiddenElements', false);
+                            });
+                        }
                     }
 
                     var labels = { hiddenElements: 'Hidden Elements: Show' };
@@ -28007,6 +29484,10 @@ function Ktl($, appInfo) {
                             ...(older.userFilters || {}),
                             ...(newer.userFilters || {})
                         };
+                    }
+                    // Collapsible groups: newer wins (reflects latest user actions)
+                    if (newer.collapsibleGroups || older.collapsibleGroups) {
+                        merged.collapsibleGroups = newer.collapsibleGroups || {};
                     }
                     return merged;
                 }
@@ -28155,6 +29636,7 @@ function Ktl($, appInfo) {
                 for (var i = 0; i < logArray.length; i++)
                     msg += logArray[i] + ' ';
                 msg = msg.slice(0, -1);
+                ktl.core.logCaller(2);
                 console.log('%c' + msg, 'color:' + color + ';font-weight:bold');
             },
 
@@ -28590,6 +30072,9 @@ function Ktl($, appInfo) {
         const LOGIN_WRONG_USER_INFO = 'Wrong email or password';
         const LOGIN_TIMEOUT = 'Timeout';
 
+        //User roles can only change with a full page reload, so cache them on first successful read.
+        let cachedUserRoles;
+
         //Show logged-in user ID when double-clicking on First name.
         //Useful to copy/pase in the localStorage filtering field to see only those entries.
         $(document).on('knack-scene-render.any', function (event, scene) {
@@ -28700,11 +30185,70 @@ function Ktl($, appInfo) {
 
         return {
             isDeveloper: function () {
-                return ((Knack.getUserRoleNames().split(',').map((element) => element.trim()).includes('Developer')) || (ktl.storage.lsGetItem('forceDevRole', true) === 'true'));
+                return (ktl.account.getUserRoles().includes('Developer') || (ktl.storage.lsGetItem('forceDevRole', true) === 'true'));
             },
 
             isLoggedIn: function () {
                 return Knack.getUserAttributes() !== 'No user found';
+            },
+
+            /**
+             * Returns the logged-in user's roles as a trimmed array.
+             * Cached on first successful read (roles only change on a full page reload).
+             * Safe against getUserRoleNames() returning null/undefined (happens on session expiry).
+             * @returns {string[]} Role names, or [] when there is no user/session.
+             */
+            getUserRoles: function () {
+                if (cachedUserRoles)
+                    return cachedUserRoles;
+
+                const roles = Knack.getUserRoleNames();
+                const parsed = Array.isArray(roles)
+                    ? roles.map(role => String(role).trim()).filter(Boolean)
+                    : (roles ?? '').split(',').map(role => role.trim()).filter(Boolean);
+
+                if (parsed.length) //Don't cache a pre-login empty result.
+                    cachedUserRoles = parsed;
+
+                return parsed;
+            },
+
+            /**
+             * Resolves a logged-in account field value from the Knack user attributes payload.
+             * @param {object} userAttr Logged-in user attributes returned by Knack.
+             * @param {string} fieldId Knack field id to resolve.
+             * @returns {*|undefined} Comparable field value for ktlCond.
+             */
+            getLoggedInAccountFieldValue: function (userAttr, fieldId) {
+                const resolveValue = (userValue) => {
+                    if (userValue == null)
+                        return userValue;
+
+                    if (Array.isArray(userValue))
+                        return userValue.map(value => resolveValue(value)).filter(value => value != null);
+
+                    if (typeof userValue !== 'object')
+                        return userValue;
+
+                    if (userValue.full != null)
+                        return userValue.full;
+
+                    if (userValue.email != null)
+                        return userValue.email;
+
+                    if (userValue.identifier != null)
+                        return userValue.identifier;
+
+                    if (userValue.label != null)
+                        return userValue.label;
+
+                    if (userValue.date_formatted != null)
+                        return userValue.date_formatted;
+
+                    return Object.values(userValue).find(value => value != null && typeof value !== 'object');
+                };
+
+                return resolveValue(userAttr?.values?.[fieldId]);
             },
 
             logout: function () {
@@ -28812,8 +30356,11 @@ function Ktl($, appInfo) {
                                     } else {
                                         loginInfo = JSON.stringify({ email: email, pw: pw });
                                         ktl.storage.lsSetItem('AES_LI', loginInfo, true, false, true);
+                                        setTimeout(() => {
+                                            ktl.account.logout();
+                                            location.reload();
+                                        }, 500);
                                     }
-                                    location.reload();
                                 })
                                 .catch(reason => { ktl.log.clog('purple', reason); });
                         } else
@@ -28825,7 +30372,7 @@ function Ktl($, appInfo) {
             checkUserRolesMatch: function (rolesToCheck = []/*Leave empty for any roles.*/) {
                 if (!rolesToCheck.length) return true;
                 var defaultRes = false;
-                const userRoles = Knack.getUserRoleNames().split(', ');
+                const userRoles = [...ktl.account.getUserRoles()]; //Copy: getUserRoles() returns the cached array, must not mutate it.
 
                 if (ktl.storage.lsGetItem('forceDevRole', true) === 'true')
                     userRoles.push('Developer');
@@ -28846,7 +30393,7 @@ function Ktl($, appInfo) {
             },
 
             matchUserRoles: function (roles = []) {
-                const userRoles = Knack.getUserRoleNames().split(', ');
+                const userRoles = ktl.account.getUserRoles();
                 const canIncludeRoles = roles.filter(role => !role.startsWith('!'));
                 const cannotIncludeRoles = roles.filter(role => role.startsWith('!')).map(role => role.slice(1));
 
@@ -29193,7 +30740,7 @@ function Ktl($, appInfo) {
 
                                         if (ktl.core.isMoreRecent(cloudPfDt, localPfDt))
                                             pubFiltersNeedDownload = true;
-                                        else if (Knack.getUserRoleNames().includes('Public Filters') && (!cloudPfDt || ktl.core.isMoreRecent(localPfDt, cloudPfDt))) {
+                                        else if (ktl.account.getUserRoles().includes('Public Filters') && (!cloudPfDt || ktl.core.isMoreRecent(localPfDt, cloudPfDt))) {
                                             pubFiltersNeedUpload = true;
                                         }
                                     }
@@ -30656,6 +32203,7 @@ function Ktl($, appInfo) {
             if (document.querySelector(`#${viewId} .bulkOpsControlsDiv`)) return;
 
             const ktlAddonsDiv = ktl.views.getKtlAddOnsDiv(viewId);
+            if (!ktlAddonsDiv) return;
 
             const bulkOpsControlsDiv = document.createElement('div');
             bulkOpsControlsDiv.classList.add('bulkOpsControlsDiv', 'ktlFeatureGroup');
@@ -31003,11 +32551,34 @@ function Ktl($, appInfo) {
 
             if (numToProcess > 0) {
                 if (!$.isEmptyObject(apiData) && e.target.id === 'ktl-bulk-paste-' + viewId) {
-                    processBulkEdit(); //Paste button.
+                    processBulkEdit(viewId); //Paste button.
                 } else {
-                    recId = recId || e.target.closest('tr[id]').id;
-                    const src = (Knack.views[viewId].model.results_model && Knack.views[viewId].model.results_model.data._byId[recId].attributes)
-                        || Knack.views[viewId].model.data._byId[recId].attributes;
+                    const sourceRow = (e && e.target && typeof e.target.closest === 'function') ? e.target.closest('tr[id]') : null;
+                    if (!recId && !sourceRow) {
+                        const errorMsg = `KEC_1032 - Bulk operation aborted: source row not found. viewId=${viewId}, operation=${operation}`;
+                        if (typeof ktl?.log?.addLog === 'function')
+                            ktl.log.addLog(ktl.const.LS_APP_ERROR, errorMsg);
+
+                        console.error(errorMsg, { viewId, operation, target: e ? e.target : null });
+                        ktl.core.timedPopup('Bulk operation stopped: source row not found. Please retry after the view finishes loading.', 'warning', 4000);
+                        return;
+                    }
+
+                    recId = recId || sourceRow.id;
+                    const srcRecord = (Knack.views[viewId].model.results_model && Knack.views[viewId].model.results_model.data._byId[recId])
+                        || (Knack.views[viewId].model.data && Knack.views[viewId].model.data._byId[recId]);
+
+                    if (!srcRecord || !srcRecord.attributes) {
+                        const errorMsg = `KEC_1032 - Bulk operation aborted: source record missing. viewId=${viewId}, operation=${operation}, recId=${recId}`;
+                        if (typeof ktl?.log?.addLog === 'function')
+                            ktl.log.addLog(ktl.const.LS_APP_ERROR, errorMsg);
+
+                        console.error(errorMsg, { viewId, operation, recId });
+                        ktl.core.timedPopup('Bulk operation stopped: source record not available. Please retry after the view finishes loading.', 'warning', 4000);
+                        return;
+                    }
+
+                    const src = srcRecord.attributes;
 
                     //Add all selected fields from header.
                     let checkedFields = $(`#${viewId} ${bulkOpsHeaderCheckboxSelector}:is(:checked)`);
@@ -31033,12 +32604,13 @@ function Ktl($, appInfo) {
                     }
 
                     if (operation === 'ktl-bulk-duplicate-' + viewId)
-                        processBulkDuplicate();
+                        processBulkDuplicate(viewId);
                     else
-                        processBulkEdit();
+                        processBulkEdit(viewId);
                 }
 
-                function processBulkEdit() {
+                function processBulkEdit(viewId) {
+                    if (!bulkOpsViewId) bulkOpsViewId = viewId;
                     const objName = ktl.views.getViewSourceName(bulkOpsViewId);
 
                     addLudLubFieldsToApiData(apiData);
@@ -31051,11 +32623,12 @@ function Ktl($, appInfo) {
 
                     const showProgress = (updatedCount) => {
                         const done = Number.isFinite(updatedCount) ? updatedCount : 0;
-                        ktl.core.setInfoPopupText('Updating ' + arrayLen + ' ' + pluralizeObjectName(objName, arrayLen) + '.    Records left: ' + (arrayLen - done));
+                        ktl.core.setInfoPopupText('Updating ' + arrayLen + ' ' + pluralizeObjectName(objName, arrayLen) + '.    Records updated: ' + done + ' of ' + arrayLen);
                     };
 
                     showProgress(0);
-                    ktl.api.updateRecords(bulkOpsViewId, recordIds, apiData, [], {
+                    ktl.api.updateRecords(bulkOpsViewId, recordIds, apiData, {
+                        autoUploadAssets: true,
                         onProgress: ({ updated }) => showProgress(updated),
                         continueOnError: false,
                         staggerMs: 40
@@ -31073,7 +32646,8 @@ function Ktl($, appInfo) {
                         });
                 }
 
-                function processBulkDuplicate() {
+                function processBulkDuplicate(viewId) {
+                    if (!bulkOpsViewId) bulkOpsViewId = viewId;
                     const objName = ktl.views.getViewSourceName(bulkOpsViewId);
 
                     addLudLubFieldsToApiData(apiData);
@@ -31083,14 +32657,15 @@ function Ktl($, appInfo) {
                     let countDone = 0;
 
                     function showProgress() {
-                        ktl.core.setInfoPopupText('Creating ' + numToProcess + ' ' + pluralizeObjectName(objName, numToProcess) + '.    Records created: ' + countDone);
+                        ktl.core.setInfoPopupText('Creating ' + numToProcess + ' ' + pluralizeObjectName(objName, numToProcess) + '.    Records processed: ' + countDone + ' of ' + numToProcess);
                     }
 
                     showProgress();
 
                     const recordsToCreate = Array.from({ length: numToProcess }, () => ({ ...apiData }));
 
-                    ktl.api.createRecords(bulkOpsViewId, recordsToCreate, [], {
+                    ktl.api.createRecords(bulkOpsViewId, recordsToCreate, {
+                        autoUploadAssets: true,
                         onProgress: ({ created, failed }) => {
                             countDone = created + failed;
                             showProgress();
@@ -31164,7 +32739,7 @@ function Ktl($, appInfo) {
             // Helper to check bulk operation permission
             const checkBulkOpPermission = (roleName, configEnabled, additionalChecks = true) => {
                 return configEnabled
-                    && (Knack.getUserRoleNames().includes(roleName) || bulkOpEnabled)
+                    && (ktl.account.getUserRoles().includes(roleName) || bulkOpEnabled)
                     && !bulkOpDisabled
                     && additionalChecks;
             };
@@ -31234,7 +32809,7 @@ function Ktl($, appInfo) {
                     }
 
                     showProgress(0);
-                    ktl.api.deleteRecords(view.key, deleteArray, [], {
+                    ktl.api.deleteRecords(view.key, deleteArray, {
                         onProgress: ({ deleted }) => showProgress(deleted),
                         continueOnError: false,
                         staggerMs: 40
@@ -31447,15 +33022,12 @@ function Ktl($, appInfo) {
                     }
 
                     let allOk = true;
-                    let viewsToCheck = [];
                     let reason = '';
 
                     for (const view of Knack.router.scene_view.model.views.models) {
                         const viewId = view.id;
-                        if (viewId && !Knack.views[viewId]) //Check to be sure it's not a "dead" view that remains in the Builder.  That's a bug in Knack.
+                        if (viewId && !Knack.views[viewId] && !document.getElementById(viewId)) //Dead view that remains in the Builder (Knack bug) — skip only if also absent from DOM.
                             continue;
-
-                        viewsToCheck.push(viewId);
 
                         const viewSelector = `#${viewId}`;
                         const viewElement = document.querySelector(viewSelector);
@@ -31825,7 +33397,7 @@ function Ktl($, appInfo) {
 
         function generateTableContainer(event, scene) {
             const dynamicTableDiv = document.createElement('div');
-            dynamicTableDiv.classList.add('kn-table', 'kn-table-table', 'is-bordered', 'is-striped', 'can-overflow-x');
+            dynamicTableDiv.classList.add('knTable', 'kn-table', 'kn-table-table', 'is-bordered', 'is-striped', 'can-overflow-x');
             dynamicTableDiv.setAttribute('id', 'accountLogsDynamicTable');
             dynamicTableDiv.style.width = '100%';
             dynamicTableDiv.style.minHeight = '70px';
@@ -32256,8 +33828,8 @@ function Ktl($, appInfo) {
 
                 resultWndTextDiv.style.minWidth = '400px';
                 resultWndTextDiv.style.minHeight = '200px';
-                resultWndTextDiv.style.height = Math.min(resultWndTextDiv.clientHeight, DEFAULT_HEIGHT) + 'px';
-                resultWndTextDiv.style.width = Math.min(resultWndTextDiv.clientWidth, DEFAULT_WIDTH) + 'px';
+                resultWndTextDiv.style.height = Math.min(resultWndTextDiv.clientHeight || Math.round(window.innerHeight * 0.40), DEFAULT_HEIGHT) + 'px';
+                resultWndTextDiv.style.width = Math.min(resultWndTextDiv.clientWidth || Math.round(window.innerWidth * 0.26), DEFAULT_WIDTH) + 'px';
 
                 const devToolStorageName = 'devToolSearchResult';
                 ktl.core.addAppResizeSubscriber(ktl.core.ktlDevToolsAdjustPositionAndSave, resultWnd, devToolStorageName);
@@ -32288,7 +33860,7 @@ function Ktl($, appInfo) {
 
                     ktl.core.ktlDevToolsAdjustPositionAndSave(resultWnd, devToolStorageName, savedPosition);
                 } else {
-                    const position = ktl.core.centerElementOnScreen(resultWnd);
+                    const position = ktl.core.devToolAutoPosition(resultWnd);
                     ktl.core.ktlDevToolsAdjustPositionAndSave(resultWnd, devToolStorageName, position);
                 }
 
@@ -33288,6 +34860,9 @@ function Ktl($, appInfo) {
                     });
 
                     $(document).on('click', '.cell-edit', (event) => {
+                        const viewId = event.target.closest('.kn-view')?.id;
+                        if (viewId && !ktl.views.viewHasInlineEdit(viewId)) return;
+
                         ktl.core.waitSelector("#cell-editor").then(() => {
                             setTimeout(() => { // Wait for cell-editor's content to change
                                 $("#cell-editor").find('div:not(.chzn-search) > input:visible').trigger('focus');
@@ -33689,6 +35264,7 @@ function Ktl($, appInfo) {
         //KTL exposed objects
         const: this.const,
         core: this.core,
+        api: this.api,
         storage: this.storage,
         fields: this.fields,
         views: this.views,
